@@ -61,11 +61,12 @@ VIDEO_DURATION = 16.0
 FADE_DURATION = 1.5
 FADE_START = VIDEO_DURATION - FADE_DURATION  # 14.5 seconds
 
-DEEP_WHISPER_VOICES = [
-    "en-US-ChristopherNeural",
-    "en-US-DavisNeural",
-    "en-US-AndrewMultilingualNeural",
-    "en-GB-RyanNeural"
+# Microsoft's most realistic, natural human neural voices (Gen-2 Multilingual models)
+NATURAL_CALM_VOICES = [
+    "en-US-AndrewMultilingualNeural",  # #1 Most realistic warm, calm, natural male voice
+    "en-US-BrianMultilingualNeural",   # Soft, intimate, natural conversational male voice
+    "en-US-AvaMultilingualNeural",     # Ultra-natural, warm, soothing female voice
+    "en-GB-RyanNeural"                 # Crisp, calm British narrator
 ]
 
 ASMR_QUERY_MAP = {
@@ -96,7 +97,6 @@ def prepare_quote_lines(text):
             f.write(line.strip())
         line_files.append(fname)
 
-    # Create subtle spaced-out header from the Title column (e.g. "• M I D N I G H T   R A I N •")
     clean_title = "".join(c for c in title.upper() if c.isalnum() or c == " ").strip() or "DAILY STILLNESS"
     spaced_header = "   ".join(word for word in [" ".join(list(w)) for w in clean_title.split()])
     with open("header.txt", "w", encoding="utf-8", newline="") as f:
@@ -105,33 +105,27 @@ def prepare_quote_lines(text):
     return line_files
 
 async def _edge_tts_save(spoken_text, voice_name):
+    # Subtle -10% rate and -2Hz pitch keeps 100% natural human vocal formants without sounding robotic!
     communicate = edge_tts.Communicate(
         text=spoken_text,
         voice=voice_name,
-        rate="-22%",
-        pitch="-8Hz",
-        volume="-15%"
+        rate="-10%",
+        pitch="-2Hz"
     )
     await communicate.save("voice_raw.mp3")
 
-def generate_deep_whisper_voiceover(text):
-    """Generates a deep, calm, soft-spoken whispering voiceover with close-mic ASMR mastering."""
-    spoken_text = (
-        text.replace("\r", " ")
-        .replace("\n", " ... ... ")
-        .replace(". ", " ... ... ")
-        .replace(", ", " ... ")
-        .replace("; ", " ... ")
-        .strip()
-    )
+def generate_natural_calm_voiceover(text):
+    """Generates a 100% natural, studio-clean human voiceover without artificial pitch warping."""
+    # Clean punctuation so the neural model uses its own natural human prosody and breath pauses
+    spoken_text = " ".join(text.replace("\r", " ").replace("\n", " ").split()).strip()
 
     raw_generated = False
 
-    for voice_name in DEEP_WHISPER_VOICES:
+    for voice_name in NATURAL_CALM_VOICES:
         try:
             asyncio.run(_edge_tts_save(spoken_text, voice_name))
             if os.path.exists("voice_raw.mp3") and os.path.getsize("voice_raw.mp3") > 1000:
-                print(f"Generated deep soft voiceover using {voice_name} ({os.path.getsize('voice_raw.mp3')} bytes).")
+                print(f"Generated natural neural voiceover using {voice_name} ({os.path.getsize('voice_raw.mp3')} bytes).")
                 raw_generated = True
                 break
         except Exception as e:
@@ -139,35 +133,27 @@ def generate_deep_whisper_voiceover(text):
 
     if not raw_generated:
         try:
-            print("Switching to gTTS + Deep Whisper Pitch-Shift backup...")
+            print("Switching to gTTS backup...")
             from gtts import gTTS
             tts = gTTS(text=spoken_text, lang="en", tld="co.uk", slow=False)
-            tts.save("voice_gtts.mp3")
-            subprocess.run([
-                "ffmpeg", "-y", "-i", "voice_gtts.mp3",
-                "-af", "asetrate=24000*0.82,aresample=24000,atempo=0.95",
-                "voice_raw.mp3"
-            ], check=True)
+            tts.save("voice_raw.mp3")
             if os.path.exists("voice_raw.mp3") and os.path.getsize("voice_raw.mp3") > 1000:
                 raw_generated = True
         except Exception as e:
             print(f"gTTS backup failed: {e}")
 
+    # Pure Studio Mastering: NO asetrate warping, NO hollow midrange scoop, NO metallic echo.
+    # Just clean 44.1kHz stereo conversion, gentle warmth at 120Hz, and smooth dynamic leveling.
     if raw_generated:
         try:
             subprocess.run([
                 "ffmpeg", "-y", "-i", "voice_raw.mp3",
                 "-af", (
-                    "asetrate=24000*0.93,aresample=44100,atempo=0.98,"
                     "aformat=sample_rates=44100:channel_layouts=stereo,"
-                    "highpass=f=65,"
-                    "equalizer=f=115:width_type=o:w=1.8:g=4.5,"
-                    "equalizer=f=900:width_type=o:w=2.0:g=-5.0,"
-                    "equalizer=f=3800:width_type=o:w=1.5:g=2.5,"
-                    "lowpass=f=5200,"
-                    "extrastereo=m=1.25,"
-                    "aecho=0.8:0.86:45:0.14,"
-                    "volume=2.6"
+                    "highpass=f=75,"
+                    "equalizer=f=125:width_type=o:w=1.5:g=2.0,"
+                    "dynaudnorm=f=150:g=15,"
+                    "volume=1.6"
                 ),
                 "-ar", "44100", "-ac", "2",
                 "voice.mp3"
@@ -176,7 +162,7 @@ def generate_deep_whisper_voiceover(text):
         except Exception:
             subprocess.run([
                 "ffmpeg", "-y", "-i", "voice_raw.mp3",
-                "-af", "volume=2.4", "-ar", "44100", "-ac", "2",
+                "-af", "volume=1.8", "-ar", "44100", "-ac", "2",
                 "voice.mp3"
             ], check=True)
             return True
@@ -340,7 +326,6 @@ def get_duration(filename):
 def render_ffmpeg(piano_file):
     line_files = prepare_quote_lines(overlay_text)
     
-    # 1. Smoothly slow down short clips to match 16.0s without looping
     raw_vid_duration = get_duration("raw_video.mp4")
     if 0.5 < raw_vid_duration < VIDEO_DURATION:
         pts_multiplier = (VIDEO_DURATION + 0.5) / raw_vid_duration
@@ -359,7 +344,6 @@ def render_ffmpeg(piano_file):
     header_y = f"(h-{total_height})/2-95"
     divider_y = f"(h+{total_height})/2+45"
 
-    # Header fade-in at 1.0s in warm muted gold (#e2c08d)
     header_alpha = "if(lt(t,1.0),0,if(lt(t,2.0),(t-1.0)/1.0,if(lt(t,14.5),0.80,if(lt(t,15.8),0.80*(15.8-t)/1.3,0))))"
     drawtext_chain = [
         f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
@@ -373,7 +357,6 @@ def render_ffmpeg(piano_file):
         f"alpha='{header_alpha}'"
     ]
 
-    # Staggered Line-by-Line Reveal: Line 0 at 1.0s, Line 1 at 1.45s, Line 2 at 1.90s...
     for idx, fname in enumerate(line_files):
         start_t = 1.0 + (idx * 0.45)
         fade_in_end = start_t + 0.95
@@ -398,11 +381,6 @@ def render_ffmpeg(piano_file):
 
     drawtext_filters_str = ",".join(drawtext_chain)
 
-    # Video Filter:
-    # - Warm 35mm film color grade (colorbalance warm highlights + subtle organic film grain)
-    # - 48% darkened matte + radial vignette
-    # - Subtle golden center divider line below the quote
-    # - Smooth golden bottom progress bar (glides across the bottom over 16s)
     v_filter = (
         f"[0:v]setpts={pts_multiplier:.4f}*PTS,"
         f"scale=1080:1920:force_original_aspect_ratio=increase,"
@@ -420,9 +398,9 @@ def render_ffmpeg(piano_file):
 
     a_filter = (
         f"[1:a]aformat=sample_rates=44100:channel_layouts=stereo,"
-        f"lowpass=f=3200,volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.14,0.34)':eval=frame[piano];"
+        f"lowpass=f=3200,volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.16,0.34)':eval=frame[piano];"
         f"[2:a]aformat=sample_rates=44100:channel_layouts=stereo,"
-        f"volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.18,0.42)':eval=frame[asmr];"
+        f"volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.20,0.42)':eval=frame[asmr];"
         f"[3:a]aformat=sample_rates=44100:channel_layouts=stereo,"
         f"adelay=2500|2500,apad=whole_dur={VIDEO_DURATION}[voice];"
         f"[piano][asmr][voice]amix=inputs=3:duration=first:dropout_transition=0:normalize=0,"
@@ -488,7 +466,7 @@ def main():
     download_visual_background()
     fetch_asmr_audio(matched_key)
     piano_file = fetch_relaxing_piano()
-    generate_deep_whisper_voiceover(overlay_text)
+    generate_natural_calm_voiceover(overlay_text)
     render_ffmpeg(piano_file)
 
     video_url = upload_video_with_fallback()
