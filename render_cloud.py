@@ -1,10 +1,19 @@
 import os
+import sys
 import json
+import asyncio
 import random
 import urllib.parse
 import textwrap
 import requests
 import subprocess
+
+# Auto-install edge-tts and gTTS if missing in workflow YAML
+try:
+    import edge_tts
+except ImportError:
+    subprocess.run([sys.executable, "-m", "pip", "install", "edge-tts", "gTTS"], check=True)
+    import edge_tts
 
 # 1. Auto-sanitize CLOUDINARY_URL BEFORE importing cloudinary!
 raw_cloud_url = os.environ.get("CLOUDINARY_URL", "").strip()
@@ -56,7 +65,8 @@ FADE_START = VIDEO_DURATION - FADE_DURATION  # 14.5 seconds
 DEEP_CALM_VOICES = [
     "en-US-ChristopherNeural",         # Deepest, calmest, warm cinematic narrator voice
     "en-US-AndrewMultilingualNeural",  # Natural, deep, soothing chest-resonance voice
-    "en-US-EricNeural"                 # Soft, grounded late-night storytelling voice
+    "en-US-EricNeural",                # Soft, grounded late-night storytelling voice
+    "en-GB-RyanNeural"                 # Calm, warm British male narrator
 ]
 
 ASMR_QUERY_MAP = {
@@ -88,9 +98,17 @@ def prepare_quote_lines(text):
         line_files.append(fname)
     return line_files
 
+async def _edge_tts_save(spoken_text, voice_name):
+    communicate = edge_tts.Communicate(
+        text=spoken_text,
+        voice=voice_name,
+        rate="-16%",
+        pitch="-5Hz"
+    )
+    await communicate.save("voice_raw.mp3")
+
 def generate_deep_calm_voiceover(text):
-    """Generates a deep, slow, relaxing chest-resonance voiceover with warm studio EQ."""
-    # Add natural, slow breathing pauses between phrases
+    """Generates a deep, slow, relaxing voiceover using Python edge_tts API + gTTS backup."""
     spoken_text = (
         text.replace("\r", " ")
         .replace("\n", " ... ")
@@ -99,42 +117,66 @@ def generate_deep_calm_voiceover(text):
         .replace("; ", " ... ")
         .strip()
     )
-    
-    # Uses ChristopherNeural (deepest calm voice) with AndrewMultilingualNeural as fallback
+
+    raw_generated = False
+
+    # 1. Try Microsoft Neural Deep Voices via Python asyncio API
     for voice_name in DEEP_CALM_VOICES:
         try:
-            cmd = [
-                "edge-tts",
-                "--voice", voice_name,
-                "--rate=-18%",
-                "--pitch=-6Hz",
-                "--text", spoken_text,
-                "--write-media", "voice_raw.mp3"
-            ]
-            subprocess.run(cmd, check=True)
-            
-            # Studio Mastering Filter for Deep, Relaxing Voice:
-            # 1. highpass=f=65 (cleans sub-rumble)
-            # 2. equalizer=f=130:width_type=o:w=2:g=4 (boosts warm chest resonance at 130Hz)
-            # 3. lowpass=f=5800 (removes sharp/robotic high-end sibilance)
-            # 4. aecho=0.8:0.85:55:0.16 (subtle intimate room depth)
+            asyncio.run(_edge_tts_save(spoken_text, voice_name))
+            if os.path.exists("voice_raw.mp3") and os.path.getsize("voice_raw.mp3") > 1000:
+                print(f"Generated neural voiceover using {voice_name} ({os.path.getsize('voice_raw.mp3')} bytes).")
+                raw_generated = True
+                break
+        except Exception as e:
+            print(f"edge_tts ({voice_name}) failed: {e}")
+
+    # 2. Backup: If GitHub runner IP is rate-limited by Azure, use gTTS + FFmpeg Deep Pitch Shift
+    if not raw_generated:
+        try:
+            print("Switching to gTTS + FFmpeg Deep Pitch-Shift backup...")
+            from gtts import gTTS
+            tts = gTTS(text=spoken_text, lang="en", tld="co.uk", slow=False)
+            tts.save("voice_gtts.mp3")
+            # Pitch-shift down by 14% and slow tempo slightly to create a deep, calm voice
+            subprocess.run([
+                "ffmpeg", "-y", "-i", "voice_gtts.mp3",
+                "-af", "asetrate=24000*0.86,aresample=24000,atempo=0.96",
+                "voice_raw.mp3"
+            ], check=True)
+            if os.path.exists("voice_raw.mp3") and os.path.getsize("voice_raw.mp3") > 1000:
+                raw_generated = True
+                print("Generated deep voiceover via gTTS backup successfully.")
+        except Exception as e:
+            print(f"gTTS backup failed: {e}")
+
+    # 3. Master the voice track into 44100Hz STEREO (Critical so FFmpeg amix doesn't mute mono audio!)
+    if raw_generated:
+        try:
             subprocess.run([
                 "ffmpeg", "-y", "-i", "voice_raw.mp3",
                 "-af", (
-                    "highpass=f=65,"
-                    "equalizer=f=130:width_type=o:w=2:g=4,"
-                    "lowpass=f=5800,"
-                    "aecho=0.8:0.85:55:0.16,"
-                    "volume=1.55"
+                    "aformat=sample_rates=44100:channel_layouts=stereo,"
+                    "highpass=f=70,"
+                    "lowpass=f=6000,"
+                    "aecho=0.8:0.85:50:0.15,"
+                    "volume=2.2"
                 ),
+                "-ar", "44100", "-ac", "2",
                 "voice.mp3"
             ], check=True)
-            print(f"Generated deep calm voiceover ({voice_name}) successfully.")
+            print(f"Mastered stereo voice.mp3 successfully ({os.path.getsize('voice.mp3')} bytes).")
             return True
         except Exception as e:
-            print(f"Voice {voice_name} retry: {e}")
+            print(f"Voice mastering filter warning ({e}), converting directly to stereo...")
+            subprocess.run([
+                "ffmpeg", "-y", "-i", "voice_raw.mp3",
+                "-af", "volume=2.2", "-ar", "44100", "-ac", "2",
+                "voice.mp3"
+            ], check=True)
+            return True
 
-    print("All TTS attempts failed, generating silent fallback track.")
+    print("WARNING: All TTS engines failed; generating silent fallback track.")
     subprocess.run([
         "ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={VIDEO_DURATION}",
         "voice.mp3"
@@ -310,15 +352,14 @@ def render_ffmpeg(piano_file):
     else:
         pts_multiplier = 1.0
 
-    # Calculate exact voiceover timing for smooth background ducking (starts at 2.5s)
     vo_duration = get_duration("voice.mp3")
     vo_start = 2.5
     vo_end = min(VIDEO_DURATION - 1.0, vo_start + vo_duration + 0.4)
+    print(f"Voiceover duration: {vo_duration:.2f}s (Ducking background from {vo_start:.1f}s to {vo_end:.1f}s)")
 
     piano_duration = get_duration(piano_file)
     piano_start = random.uniform(0, piano_duration - VIDEO_DURATION - 1) if piano_duration > 20 else 0
 
-    # Text stays hidden for the first 1.0 second, then fades in smoothly
     text_alpha = (
         "if(lt(t,1.0),0,"
         "if(lt(t,2.0),(t-1.0)/1.0,"
@@ -355,13 +396,15 @@ def render_ffmpeg(piano_file):
         f"fade=t=in:st=0:d=0.5,fade=t=out:st={FADE_START}:d={FADE_DURATION}[v]"
     )
 
-    # 3-Layer Audio Mix with Automatic Voiceover Ducking:
-    # - Piano & ASMR play richly during the intro, duck softly to 20% while the deep voice speaks (2.5s to vo_end), then swell back up
+    # All 3 audio streams are explicitly locked to 44100Hz Stereo so amix never drops the voiceover!
     a_filter = (
-        f"[1:a]lowpass=f=3200,volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.20,0.36)':eval=frame[piano];"
-        f"[2:a]volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.25,0.45)':eval=frame[asmr];"
-        f"[3:a]adelay=2500|2500,apad=whole_dur={VIDEO_DURATION}[voice];"
-        f"[piano][asmr][voice]amix=inputs=3:duration=first:dropout_transition=2:normalize=0,"
+        f"[1:a]aformat=sample_rates=44100:channel_layouts=stereo,"
+        f"lowpass=f=3200,volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.16,0.34)':eval=frame[piano];"
+        f"[2:a]aformat=sample_rates=44100:channel_layouts=stereo,"
+        f"volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.20,0.42)':eval=frame[asmr];"
+        f"[3:a]aformat=sample_rates=44100:channel_layouts=stereo,"
+        f"adelay=2500|2500,apad=whole_dur={VIDEO_DURATION}[voice];"
+        f"[piano][asmr][voice]amix=inputs=3:duration=first:dropout_transition=0:normalize=0,"
         f"afade=t=in:st=0:d=1.0,"
         f"afade=t=out:st={FADE_START}:d={FADE_DURATION}[a]"
     )
