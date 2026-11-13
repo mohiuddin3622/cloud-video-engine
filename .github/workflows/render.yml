@@ -13,8 +13,8 @@ jobs:
 
       - name: Install FFmpeg, Fonts, and Python Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
-          pip install requests cloudinary
+          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core espeak-ng
+          pip install requests cloudinary edge-tts gTTS
 
       - name: Run Video Render & Upload
         env:
@@ -24,7 +24,3 @@ jobs:
           MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL }}
           PAYLOAD_JSON: ${{ toJson(github.event.client_payload) }}
         run: python render_cloud.py
-      - name: Install FFmpeg, Fonts, and Python Dependencies
-        run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
-          pip install requests cloudinary edge-tts    
