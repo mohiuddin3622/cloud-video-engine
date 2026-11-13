@@ -15,7 +15,7 @@ title = payload.get("title", "Daily Calm")
 niche = payload.get("niche", "rain").lower().strip()
 overlay_text = payload.get("overlay_text", "Peace comes from within.\nDo not seek it without.")
 search_keyword = payload.get("search_keyword", "rain drops window dark night")
-caption = payload.get("caption", "Take a deep breath and relax. #relaxing #asmr #reels")
+caption = payload.get("caption", "Take a deep breath and relax. #relaxing #asmr #pianomusic #reels")
 
 PIXABAY_API_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()
 FREESOUND_API_KEY = os.environ.get("FREESOUND_API_KEY", "").strip()
@@ -25,6 +25,7 @@ VIDEO_DURATION = 16.0
 FADE_DURATION = 1.5
 FADE_START = VIDEO_DURATION - FADE_DURATION  # 14.5 seconds
 
+# Specific ASMR sound queries matched to the sheet's Niche column
 ASMR_QUERY_MAP = {
     "rain": "gentle rain falling window ambient asmr",
     "ocean": "calm ocean waves beach water ambient",
@@ -51,7 +52,7 @@ def detect_niche_keyword():
     return "rain"
 
 def download_visual_background():
-    """Fetches HD video from Pixabay if key exists; otherwise uses Zero-Key Pollinations AI + FFmpeg Slow Zoom."""
+    """Fetches HD video from Pixabay; falls back to Zero-Key Pollinations AI + 16s Slow Zoom."""
     if PIXABAY_API_KEY:
         try:
             q = urllib.parse.quote(search_keyword)
@@ -76,9 +77,9 @@ def download_visual_background():
                         f.write(requests.get(video_url, timeout=60).content)
                     return
         except Exception as e:
-            print(f"Pixabay fetch skipped, using Zero-Key AI motion background: {e}")
+            print(f"Pixabay skipped, using Zero-Key AI motion background: {e}")
 
-    # ZERO-KEY CLOUD FALLBACK: Generate vertical 1080x1920 image via Pollinations.ai & animate 16s zoompan
+    # Zero-Key Fallback: Pollinations AI 1080x1920 image + 16-second smooth Ken Burns zoompan
     prompt = urllib.parse.quote(
         f"cinematic dark moody relaxing aesthetic {search_keyword} nature photography, 8k, photorealistic, no text"
     )
@@ -97,14 +98,14 @@ def download_visual_background():
     ], check=True)
 
 def fetch_asmr_audio(matched_key):
-    """Fetches niche ASMR from Freesound or synthesizes soothing brown-noise rain via FFmpeg."""
+    """Layer 1 Audio: Fetches niche ASMR sound from Freesound or synthesizes stereo rain ASMR."""
     if FREESOUND_API_KEY:
         try:
-            query = ASMR_QUERY_MAP.get(matched_key, f"{search_keyword} ambient")
+            query = urllib.parse.quote(ASMR_QUERY_MAP.get(matched_key, f"{search_keyword} ambient"))
             url = (
                 f"https://freesound.org/apiv2/search/text/"
                 f"?query={query}&filter=duration:[16 TO 180]&fields=id,name,previews"
-                f"&page_size=5&token={FREESOUND_API_KEY}"
+                f"&page_size=8&token={FREESOUND_API_KEY}"
             )
             data = requests.get(url, timeout=15).json()
             results = data.get("results", [])
@@ -115,31 +116,56 @@ def fetch_asmr_audio(matched_key):
                     f.write(requests.get(mp3_url, timeout=20).content)
                 return
         except Exception as e:
-            print(f"Freesound fallback triggered: {e}")
+            print(f"Freesound ASMR fallback triggered: {e}")
 
     subprocess.run([
         "ffmpeg", "-y", "-f", "lavfi",
-        "-i", f"anoisesrc=d={VIDEO_DURATION}:c=brown:r=44100:a=0.08",
-        "-af", "lowpass=f=1200,highpass=f=120",
+        "-i", f"anoisesrc=d={VIDEO_DURATION}:c=pink:r=44100:a=0.10",
+        "-af", "bandpass=f=900:width_type=h:w=700,tremolo=f=0.4:d=0.35,extrastereo=m=2.0",
         "asmr.mp3"
     ], check=True)
 
-def select_music_track(matched_key):
-    """Uses audio/{niche}.mp3 or bgm.mp3 if present; otherwise synthesizes a 432Hz ambient pad."""
-    candidate = f"audio/{matched_key}.mp3"
-    if os.path.exists(candidate):
-        return candidate
-    if os.path.exists("bgm.mp3"):
-        return "bgm.mp3"
+def fetch_relaxing_piano():
+    """Layer 2 Audio: Uses repo piano.mp3, fetches soft piano from Freesound, or synthesizes warm piano chords."""
+    for filename in ["piano.mp3", "bgm.mp3", "audio/piano.mp3", "audio/default.mp3"]:
+        if os.path.exists(filename):
+            return filename
+
+    if FREESOUND_API_KEY:
+        try:
+            query = urllib.parse.quote("soft relaxing piano calm ambient instrumental")
+            url = (
+                f"https://freesound.org/apiv2/search/text/"
+                f"?query={query}&filter=duration:[16 TO 240]&fields=id,name,previews"
+                f"&page_size=10&token={FREESOUND_API_KEY}"
+            )
+            data = requests.get(url, timeout=15).json()
+            results = data.get("results", [])
+            if results:
+                chosen_piano = random.choice(results)
+                mp3_url = chosen_piano["previews"]["preview-hq-mp3"]
+                with open("cloud_piano.mp3", "wb") as f:
+                    f.write(requests.get(mp3_url, timeout=20).content)
+                return "cloud_piano.mp3"
+        except Exception as e:
+            print(f"Freesound Piano fallback triggered: {e}")
+
     subprocess.run([
-        "ffmpeg", "-y", "-f", "lavfi",
-        "-i", f"sine=frequency=216:duration={VIDEO_DURATION}",
-        "-f", "lavfi",
-        "-i", f"sine=frequency=324:duration={VIDEO_DURATION}",
-        "-filter_complex", "[0:a][1:a]amix=inputs=2,volume=0.08,lowpass=f=400",
-        "synth_bgm.mp3"
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"sine=frequency=261.63:duration={VIDEO_DURATION}",
+        "-f", "lavfi", "-i", f"sine=frequency=329.63:duration={VIDEO_DURATION}",
+        "-f", "lavfi", "-i", f"sine=frequency=392.00:duration={VIDEO_DURATION}",
+        "-f", "lavfi", "-i", f"sine=frequency=493.88:duration={VIDEO_DURATION}",
+        "-filter_complex",
+        "[0:a]tremolo=f=0.25:d=0.6[a0];"
+        "[1:a]tremolo=f=0.33:d=0.6[a1];"
+        "[2:a]tremolo=f=0.20:d=0.6[a2];"
+        "[3:a]tremolo=f=0.15:d=0.7[a3];"
+        "[a0][a1][a2][a3]amix=inputs=4:duration=first,"
+        "lowpass=f=650,aecho=0.8:0.88:120|240:0.4|0.3,volume=0.18",
+        "synth_piano.mp3"
     ], check=True)
-    return "synth_bgm.mp3"
+    return "synth_piano.mp3"
 
 def get_duration(filename):
     cmd = [
@@ -148,11 +174,11 @@ def get_duration(filename):
     ]
     return float(subprocess.check_output(cmd).decode().strip())
 
-def render_ffmpeg(music_file):
+def render_ffmpeg(piano_file):
     prepare_quote_file(overlay_text)
     
-    bgm_duration = get_duration(music_file)
-    bgm_start = random.uniform(0, bgm_duration - VIDEO_DURATION - 1) if bgm_duration > 20 else 0
+    piano_duration = get_duration(piano_file)
+    piano_start = random.uniform(0, piano_duration - VIDEO_DURATION - 1) if piano_duration > 20 else 0
 
     text_alpha = (
         "if(lt(t,1.0),0,"
@@ -161,7 +187,7 @@ def render_ffmpeg(music_file):
         "if(lt(t,15.0),(15.0-t)/1.5,0))))"
     )
 
-    # Darkened background (48% black matte + vignette) + centered white quote with soft shadow
+    # Video Filter: 48% darkened matte overlay + radial vignette + centered white quote with soft shadow
     v_filter = (
         f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
         f"crop=1080:1920,setsar=1,fps=30,"
@@ -181,11 +207,11 @@ def render_ffmpeg(music_file):
         f"fade=t=in:st=0:d=0.5,fade=t=out:st={FADE_START}:d={FADE_DURATION}[v]"
     )
 
-    # Dual-layer audio: 40% relaxing music + 45% ASMR soundscape
+    # Audio Filter: Soft Felt Piano (38% volume) + Niche ASMR Ambience (50% volume)
     a_filter = (
-        f"[1:a]volume=0.40[music];"
-        f"[2:a]volume=0.45[asmr];"
-        f"[music][asmr]amix=inputs=2:duration=first:dropout_transition=2,"
+        f"[1:a]lowpass=f=3500,volume=0.38[piano];"
+        f"[2:a]volume=0.50[asmr];"
+        f"[piano][asmr]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,"
         f"afade=t=in:st=0:d=1.0,"
         f"afade=t=out:st={FADE_START}:d={FADE_DURATION}[a]"
     )
@@ -195,7 +221,7 @@ def render_ffmpeg(music_file):
     cmd = [
         "ffmpeg", "-y",
         "-stream_loop", "-1", "-i", "raw_video.mp4",
-        "-ss", f"{bgm_start:.2f}", "-stream_loop", "-1", "-i", music_file,
+        "-ss", f"{piano_start:.2f}", "-stream_loop", "-1", "-i", piano_file,
         "-stream_loop", "-1", "-i", "asmr.mp3",
         "-filter_complex", filter_complex,
         "-map", "[v]", "-map", "[a]",
@@ -211,8 +237,8 @@ def main():
     matched_key = detect_niche_keyword()
     download_visual_background()
     fetch_asmr_audio(matched_key)
-    music_file = select_music_track(matched_key)
-    render_ffmpeg(music_file)
+    piano_file = fetch_relaxing_piano()
+    render_ffmpeg(piano_file)
 
     upload_result = cloudinary.uploader.upload(
         "final_output.mp4",
