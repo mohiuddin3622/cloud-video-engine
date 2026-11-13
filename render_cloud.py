@@ -61,12 +61,11 @@ VIDEO_DURATION = 16.0
 FADE_DURATION = 1.5
 FADE_START = VIDEO_DURATION - FADE_DURATION  # 14.5 seconds
 
-# Softest, deepest, most intimate male neural voices for a calm whispery feel
 DEEP_WHISPER_VOICES = [
-    "en-US-ChristopherNeural",         # Deep, velvety, ultra-calm late-night voice
-    "en-US-DavisNeural",               # Intimate, breathy, soft-spoken storytelling voice
-    "en-US-AndrewMultilingualNeural",  # Warm, close-mic natural chest resonance
-    "en-GB-RyanNeural"                 # Soft, soothing British narrator
+    "en-US-ChristopherNeural",
+    "en-US-DavisNeural",
+    "en-US-AndrewMultilingualNeural",
+    "en-GB-RyanNeural"
 ]
 
 ASMR_QUERY_MAP = {
@@ -80,13 +79,13 @@ ASMR_QUERY_MAP = {
 }
 
 def prepare_quote_lines(text):
-    """Splits text into clean, single-line files with ZERO newline characters."""
+    """Splits quote into clean single-line files + creates a spaced-out aesthetic header file."""
     cleaned = text.replace("\r", "").replace("\u2028", "\n").replace("\u2029", "\n")
     wrapped_lines = []
     for paragraph in cleaned.split("\n"):
         paragraph = paragraph.strip()
         if paragraph:
-            wrapped_lines.extend(textwrap.wrap(paragraph, width=22))
+            wrapped_lines.extend(textwrap.wrap(paragraph, width=21))
     if not wrapped_lines:
         wrapped_lines = ["Peace comes from within."]
 
@@ -96,10 +95,16 @@ def prepare_quote_lines(text):
         with open(fname, "w", encoding="utf-8", newline="") as f:
             f.write(line.strip())
         line_files.append(fname)
+
+    # Create subtle spaced-out header from the Title column (e.g. "• M I D N I G H T   R A I N •")
+    clean_title = "".join(c for c in title.upper() if c.isalnum() or c == " ").strip() or "DAILY STILLNESS"
+    spaced_header = "   ".join(word for word in [" ".join(list(w)) for w in clean_title.split()])
+    with open("header.txt", "w", encoding="utf-8", newline="") as f:
+        f.write(f"•  {spaced_header}  •")
+
     return line_files
 
 async def _edge_tts_save(spoken_text, voice_name):
-    # Slow rate (-22%), deeper pitch (-8Hz), and softer volume (-15%) force a gentle, hushed delivery
     communicate = edge_tts.Communicate(
         text=spoken_text,
         voice=voice_name,
@@ -111,7 +116,6 @@ async def _edge_tts_save(spoken_text, voice_name):
 
 def generate_deep_whisper_voiceover(text):
     """Generates a deep, calm, soft-spoken whispering voiceover with close-mic ASMR mastering."""
-    # Insert long, unhurried breathing pauses between phrases
     spoken_text = (
         text.replace("\r", " ")
         .replace("\n", " ... ... ")
@@ -123,7 +127,6 @@ def generate_deep_whisper_voiceover(text):
 
     raw_generated = False
 
-    # 1. Try Microsoft Neural Voices with hushed, slow, deep parameters
     for voice_name in DEEP_WHISPER_VOICES:
         try:
             asyncio.run(_edge_tts_save(spoken_text, voice_name))
@@ -134,7 +137,6 @@ def generate_deep_whisper_voiceover(text):
         except Exception as e:
             print(f"edge_tts ({voice_name}) failed: {e}")
 
-    # 2. Backup: gTTS + Deep Formant Shift if GitHub runner IP is rate-limited
     if not raw_generated:
         try:
             print("Switching to gTTS + Deep Whisper Pitch-Shift backup...")
@@ -148,17 +150,9 @@ def generate_deep_whisper_voiceover(text):
             ], check=True)
             if os.path.exists("voice_raw.mp3") and os.path.getsize("voice_raw.mp3") > 1000:
                 raw_generated = True
-                print("Generated deep voiceover via gTTS backup successfully.")
         except Exception as e:
             print(f"gTTS backup failed: {e}")
 
-    # 3. Apply Deep Close-Mic Whisper ASMR Mastering Chain (44.1kHz Stereo)
-    # - asetrate=24000*0.93,aresample=44100: deepens vocal tract warmth slightly without sounding robotic
-    # - equalizer=f=115:g=4: boosts close-mic chest proximity effect
-    # - equalizer=f=900:g=-5: scoops out loud "nasal/talking" midrange so it sounds hushed and whispered
-    # - equalizer=f=3800:g=3: adds gentle breathy whisper air
-    # - lowpass=f=5200: removes harsh high-frequency clicks/sibilance
-    # - extrastereo=m=1.25: gives a binaural close-to-the-ear stereo presence
     if raw_generated:
         try:
             subprocess.run([
@@ -178,10 +172,8 @@ def generate_deep_whisper_voiceover(text):
                 "-ar", "44100", "-ac", "2",
                 "voice.mp3"
             ], check=True)
-            print(f"Mastered deep whispering stereo voice.mp3 successfully ({os.path.getsize('voice.mp3')} bytes).")
             return True
-        except Exception as e:
-            print(f"Whisper EQ warning ({e}), applying basic stereo conversion...")
+        except Exception:
             subprocess.run([
                 "ffmpeg", "-y", "-i", "voice_raw.mp3",
                 "-af", "volume=2.4", "-ar", "44100", "-ac", "2",
@@ -189,7 +181,6 @@ def generate_deep_whisper_voiceover(text):
             ], check=True)
             return True
 
-    print("WARNING: All TTS engines failed; generating silent fallback track.")
     subprocess.run([
         "ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={VIDEO_DURATION}",
         "voice.mp3"
@@ -235,7 +226,7 @@ def download_visual_background():
 
     try:
         prompt = urllib.parse.quote(
-            f"cinematic dark moody relaxing aesthetic {search_keyword} nature photography, 8k, no text"
+            f"cinematic 35mm kodak film dark moody relaxing aesthetic {search_keyword} nature photography, 8k, no text"
         )
         seed = random.randint(1, 999999)
         img_url = f"https://image.pollinations.ai/prompt/{prompt}?width=1080&height=1920&seed={seed}&nologo=true"
@@ -250,12 +241,10 @@ def download_visual_background():
                 "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
                 "raw_video.mp4"
             ], check=True)
-            print("Generated background from Pollinations AI successfully.")
             return
     except Exception as e:
         print(f"Pollinations fallback skipped: {e}")
 
-    print("Generating built-in dark midnight aesthetic background via FFmpeg...")
     subprocess.run([
         "ffmpeg", "-y", "-f", "lavfi",
         "-i", f"color=c=#0d1b2a:s=1080x1920:r=30:d={VIDEO_DURATION}",
@@ -265,7 +254,6 @@ def download_visual_background():
     ], check=True)
 
 def fetch_asmr_audio(matched_key):
-    """Fetches niche ASMR sound from Freesound or synthesizes soothing stereo rain ASMR."""
     if FREESOUND_API_KEY:
         try:
             query = urllib.parse.quote(ASMR_QUERY_MAP.get(matched_key, f"{search_keyword} ambient"))
@@ -284,12 +272,10 @@ def fetch_asmr_audio(matched_key):
                     if len(audio_bytes) > 5000:
                         with open("asmr.mp3", "wb") as f:
                             f.write(audio_bytes)
-                        print("Downloaded ASMR audio from Freesound.")
                         return
         except Exception as e:
             print(f"Freesound ASMR fallback triggered: {e}")
 
-    print("Synthesizing stereo rain ASMR audio via FFmpeg...")
     subprocess.run([
         "ffmpeg", "-y", "-f", "lavfi",
         "-i", f"anoisesrc=d={VIDEO_DURATION}:c=pink:r=44100:a=0.10",
@@ -298,7 +284,6 @@ def fetch_asmr_audio(matched_key):
     ], check=True)
 
 def fetch_relaxing_piano():
-    """Uses repo piano.mp3, fetches soft piano from Freesound, or synthesizes warm piano chords."""
     for filename in ["piano.mp3", "bgm.mp3", "audio/piano.mp3", "audio/default.mp3"]:
         if os.path.exists(filename):
             return filename
@@ -321,12 +306,10 @@ def fetch_relaxing_piano():
                     if len(audio_bytes) > 5000:
                         with open("cloud_piano.mp3", "wb") as f:
                             f.write(audio_bytes)
-                        print("Downloaded piano track from Freesound.")
                         return "cloud_piano.mp3"
         except Exception as e:
             print(f"Freesound Piano fallback triggered: {e}")
 
-    print("Synthesizing warm ambient piano chords via FFmpeg...")
     subprocess.run([
         "ffmpeg", "-y",
         "-f", "lavfi", "-i", f"sine=frequency=261.63:duration={VIDEO_DURATION}",
@@ -357,59 +340,84 @@ def get_duration(filename):
 def render_ffmpeg(piano_file):
     line_files = prepare_quote_lines(overlay_text)
     
-    # Slow down short clips smoothly so they match 16.0s without looping
+    # 1. Smoothly slow down short clips to match 16.0s without looping
     raw_vid_duration = get_duration("raw_video.mp4")
     if 0.5 < raw_vid_duration < VIDEO_DURATION:
         pts_multiplier = (VIDEO_DURATION + 0.5) / raw_vid_duration
-        print(f"Video is {raw_vid_duration:.2f}s (< 16s). Reducing speed (setpts={pts_multiplier:.4f}*PTS) to match 16s.")
     else:
         pts_multiplier = 1.0
 
     vo_duration = get_duration("voice.mp3")
     vo_start = 2.5
     vo_end = min(VIDEO_DURATION - 1.0, vo_start + vo_duration + 0.4)
-    print(f"Voiceover duration: {vo_duration:.2f}s (Ducking background from {vo_start:.1f}s to {vo_end:.1f}s)")
 
     piano_duration = get_duration(piano_file)
     piano_start = random.uniform(0, piano_duration - VIDEO_DURATION - 1) if piano_duration > 20 else 0
 
-    text_alpha = (
-        "if(lt(t,1.0),0,"
-        "if(lt(t,2.0),(t-1.0)/1.0,"
-        "if(lt(t,14.5),1,"
-        "if(lt(t,15.8),(15.8-t)/1.3,0))))"
-    )
-
-    line_height = 80
+    line_height = 84
     total_height = len(line_files) * line_height
-    drawtext_chain = []
+    header_y = f"(h-{total_height})/2-95"
+    divider_y = f"(h+{total_height})/2+45"
+
+    # Header fade-in at 1.0s in warm muted gold (#e2c08d)
+    header_alpha = "if(lt(t,1.0),0,if(lt(t,2.0),(t-1.0)/1.0,if(lt(t,14.5),0.80,if(lt(t,15.8),0.80*(15.8-t)/1.3,0))))"
+    drawtext_chain = [
+        f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
+        f"textfile=header.txt:"
+        f"fontcolor=#e2c08d:"
+        f"fontsize=26:"
+        f"x=(w-text_w)/2:"
+        f"y={header_y}:"
+        f"shadowcolor=black@0.85:shadowx=2:shadowy=2:"
+        f"enable='gte(t,1.0)':"
+        f"alpha='{header_alpha}'"
+    ]
+
+    # Staggered Line-by-Line Reveal: Line 0 at 1.0s, Line 1 at 1.45s, Line 2 at 1.90s...
     for idx, fname in enumerate(line_files):
+        start_t = 1.0 + (idx * 0.45)
+        fade_in_end = start_t + 0.95
+        line_alpha = (
+            f"if(lt(t,{start_t:.2f}),0,"
+            f"if(lt(t,{fade_in_end:.2f}),(t-{start_t:.2f})/0.95,"
+            f"if(lt(t,14.5),1,"
+            f"if(lt(t,15.8),(15.8-t)/1.3,0))))"
+        )
         y_offset = f"(h-{total_height})/2+{idx * line_height}"
         drawtext_chain.append(
             f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf:"
             f"textfile={fname}:"
-            f"fontcolor=white:"
+            f"fontcolor=#fdfbf7:"
             f"fontsize=54:"
             f"x=(w-text_w)/2:"
             f"y={y_offset}:"
-            f"shadowcolor=black@0.90:shadowx=4:shadowy=5:"
-            f"enable='gte(t,1.0)':"
-            f"alpha='{text_alpha}'"
+            f"shadowcolor=black@0.92:shadowx=4:shadowy=5:"
+            f"enable='gte(t,{start_t:.2f})':"
+            f"alpha='{line_alpha}'"
         )
+
     drawtext_filters_str = ",".join(drawtext_chain)
 
+    # Video Filter:
+    # - Warm 35mm film color grade (colorbalance warm highlights + subtle organic film grain)
+    # - 48% darkened matte + radial vignette
+    # - Subtle golden center divider line below the quote
+    # - Smooth golden bottom progress bar (glides across the bottom over 16s)
     v_filter = (
         f"[0:v]setpts={pts_multiplier:.4f}*PTS,"
         f"scale=1080:1920:force_original_aspect_ratio=increase,"
         f"crop=1080:1920,setsar=1,fps=30,"
-        f"eq=brightness=-0.05:contrast=1.08:saturation=0.85,"
+        f"eq=brightness=-0.04:contrast=1.08:saturation=0.88,"
+        f"colorbalance=rs=-0.03:bs=0.04:rh=0.05:gh=0.02:bh=-0.04,"
+        f"noise=alls=4:allf=t+u,"
         f"vignette=PI/4,"
         f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.48:t=fill,"
+        f"drawbox=x=(iw-140)/2:y={divider_y}:w=140:h=2:color=#e2c08d@0.45:t=fill:enable='between(t,1.5,14.8)',"
+        f"drawbox=x=0:y=ih-6:w='iw*(t/{VIDEO_DURATION})':h=6:color=#e2c08d@0.75:t=fill,"
         f"{drawtext_filters_str},"
         f"fade=t=in:st=0:d=0.5,fade=t=out:st={FADE_START}:d={FADE_DURATION}[v]"
     )
 
-    # All 3 audio streams locked to 44100Hz Stereo; background ducks gently so the soft whisper is crystal clear
     a_filter = (
         f"[1:a]aformat=sample_rates=44100:channel_layouts=stereo,"
         f"lowpass=f=3200,volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.14,0.34)':eval=frame[piano];"
@@ -433,7 +441,7 @@ def render_ffmpeg(piano_file):
         "-filter_complex", filter_complex,
         "-map", "[v]", "-map", "[a]",
         "-t", f"{VIDEO_DURATION}",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart",
         "final_output.mp4"
@@ -441,7 +449,6 @@ def render_ffmpeg(piano_file):
     subprocess.run(cmd, check=True)
 
 def upload_video_with_fallback():
-    """Uploads to Cloudinary first; falls back to free Catbox/Litterbox MP4 hosting if Cloudinary fails."""
     try:
         upload_result = cloudinary.uploader.upload(
             "final_output.mp4",
@@ -463,9 +470,7 @@ def upload_video_with_fallback():
                 timeout=60
             )
             if r.status_code == 200 and r.text.strip().startswith("http"):
-                video_url = r.text.strip()
-                print(f"Uploaded to Litterbox backup host successfully: {video_url}")
-                return video_url
+                return r.text.strip()
     except Exception as e2:
         print(f"Litterbox backup failed: {e2}")
 
@@ -476,9 +481,7 @@ def upload_video_with_fallback():
             files={"fileToUpload": ("final_output.mp4", f, "video/mp4")},
             timeout=60
         )
-        video_url = r.text.strip()
-        print(f"Uploaded to Catbox permanent host successfully: {video_url}")
-        return video_url
+        return r.text.strip()
 
 def main():
     matched_key = detect_niche_keyword()
