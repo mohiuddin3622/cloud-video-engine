@@ -61,22 +61,22 @@ VIDEO_DURATION = 16.0
 FADE_DURATION = 1.5
 FADE_START = VIDEO_DURATION - FADE_DURATION  # 14.5 seconds
 
-# Deep, calm, grounded male neural voices
-DEEP_CALM_VOICES = [
-    "en-US-ChristopherNeural",         # Deepest, calmest, warm cinematic narrator voice
-    "en-US-AndrewMultilingualNeural",  # Natural, deep, soothing chest-resonance voice
-    "en-US-EricNeural",                # Soft, grounded late-night storytelling voice
-    "en-GB-RyanNeural"                 # Calm, warm British male narrator
+# Deepest, softest, most intimate neural voices
+WHISPER_CALM_VOICES = [
+    "en-US-ChristopherNeural",         # Deepest, softest late-night male narrator
+    "en-US-DavisNeural",               # Intimate, breathy, ultra-calm male voice
+    "en-US-AndrewMultilingualNeural",  # Warm, grounded chest-resonance voice
+    "en-GB-RyanNeural"                 # Soft, soothing British male voice
 ]
 
 ASMR_QUERY_MAP = {
-    "rain": "gentle rain falling window ambient asmr",
-    "ocean": "calm ocean waves beach water ambient",
-    "water": "gentle stream river flowing water nature",
-    "forest": "forest wind birds leaves nature ambient",
-    "fire": "cozy fireplace crackling wood fire asmr",
-    "night": "night crickets calm wind ambient",
-    "snow": "soft winter wind snow ambient"
+    "rain": "soft gentle rain falling window ambient asmr",
+    "ocean": "calm gentle ocean waves beach water ambient",
+    "water": "soft stream river flowing water nature calm",
+    "forest": "soft forest wind leaves nature ambient calm",
+    "fire": "cozy fireplace soft crackling wood fire asmr",
+    "night": "quiet night crickets soft wind ambient",
+    "snow": "soft winter wind snow calm ambient"
 }
 
 def prepare_quote_lines(text):
@@ -99,21 +99,24 @@ def prepare_quote_lines(text):
     return line_files
 
 async def _edge_tts_save(spoken_text, voice_name):
+    # Slow rate (-22%), deep pitch (-8Hz), and soft delivery for a whisper-like cadence
     communicate = edge_tts.Communicate(
         text=spoken_text,
         voice=voice_name,
-        rate="-16%",
-        pitch="-5Hz"
+        rate="-22%",
+        pitch="-8Hz",
+        volume="-10%"
     )
     await communicate.save("voice_raw.mp3")
 
-def generate_deep_calm_voiceover(text):
-    """Generates a deep, slow, relaxing voiceover using Python edge_tts API + gTTS backup."""
+def generate_deep_whisper_voiceover(text):
+    """Generates a deep, calm, breathy whisper-style voiceover with ASMR mic processing."""
+    # Insert long, unhurried breathing pauses between phrases
     spoken_text = (
         text.replace("\r", " ")
-        .replace("\n", " ... ")
-        .replace(". ", " ... ")
-        .replace(", ", " .. ")
+        .replace("\n", " ... ... ")
+        .replace(". ", " ... ... ")
+        .replace(", ", " ... ")
         .replace("; ", " ... ")
         .strip()
     )
@@ -121,57 +124,67 @@ def generate_deep_calm_voiceover(text):
     raw_generated = False
 
     # 1. Try Microsoft Neural Deep Voices via Python asyncio API
-    for voice_name in DEEP_CALM_VOICES:
+    for voice_name in WHISPER_CALM_VOICES:
         try:
             asyncio.run(_edge_tts_save(spoken_text, voice_name))
             if os.path.exists("voice_raw.mp3") and os.path.getsize("voice_raw.mp3") > 1000:
-                print(f"Generated neural voiceover using {voice_name} ({os.path.getsize('voice_raw.mp3')} bytes).")
+                print(f"Generated deep calm voiceover using {voice_name} ({os.path.getsize('voice_raw.mp3')} bytes).")
                 raw_generated = True
                 break
         except Exception as e:
             print(f"edge_tts ({voice_name}) failed: {e}")
 
-    # 2. Backup: If GitHub runner IP is rate-limited by Azure, use gTTS + FFmpeg Deep Pitch Shift
+    # 2. Backup: gTTS + FFmpeg Deep Whisper Pitch-Shift
     if not raw_generated:
         try:
-            print("Switching to gTTS + FFmpeg Deep Pitch-Shift backup...")
+            print("Switching to gTTS + FFmpeg Deep Whisper Pitch-Shift backup...")
             from gtts import gTTS
             tts = gTTS(text=spoken_text, lang="en", tld="co.uk", slow=False)
             tts.save("voice_gtts.mp3")
-            # Pitch-shift down by 14% and slow tempo slightly to create a deep, calm voice
             subprocess.run([
                 "ffmpeg", "-y", "-i", "voice_gtts.mp3",
-                "-af", "asetrate=24000*0.86,aresample=24000,atempo=0.96",
+                "-af", "asetrate=24000*0.82,aresample=24000,atempo=0.92",
                 "voice_raw.mp3"
             ], check=True)
             if os.path.exists("voice_raw.mp3") and os.path.getsize("voice_raw.mp3") > 1000:
                 raw_generated = True
-                print("Generated deep voiceover via gTTS backup successfully.")
+                print("Generated deep whisper voiceover via gTTS backup successfully.")
         except Exception as e:
             print(f"gTTS backup failed: {e}")
 
-    # 3. Master the voice track into 44100Hz STEREO (Critical so FFmpeg amix doesn't mute mono audio!)
+    # 3. ASMR Whisper & Deep Proximity Mastering Chain (44100Hz Stereo):
+    # - equalizer=f=115:g=5 -> Warm close-mic chest resonance (proximity effect)
+    # - equalizer=f=850:g=-5 -> Carves out harsh "loud talking" nasal midrange so it sounds whispered
+    # - equalizer=f=3800:g=3 -> Adds soft, intimate breath/air detail
+    # - lowpass=f=5200 -> Removes sharp digital sibilance
+    # - acompressor -> Keeps every word velvety-smooth and even in volume
+    # - extrastereo=m=1.25 + aecho -> Gentle binaural closeness
     if raw_generated:
         try:
             subprocess.run([
                 "ffmpeg", "-y", "-i", "voice_raw.mp3",
                 "-af", (
                     "aformat=sample_rates=44100:channel_layouts=stereo,"
-                    "highpass=f=70,"
-                    "lowpass=f=6000,"
-                    "aecho=0.8:0.85:50:0.15,"
-                    "volume=2.2"
+                    "highpass=f=60,"
+                    "equalizer=f=115:width_type=o:w=1.8:g=5,"
+                    "equalizer=f=850:width_type=o:w=1.5:g=-5,"
+                    "equalizer=f=3800:width_type=o:w=2.0:g=3,"
+                    "lowpass=f=5200,"
+                    "acompressor=threshold=-20dB:ratio=3:attack=15:release=250:makeup=2,"
+                    "extrastereo=m=1.25,"
+                    "aecho=0.8:0.86:45:0.14,"
+                    "volume=1.9"
                 ),
                 "-ar", "44100", "-ac", "2",
                 "voice.mp3"
             ], check=True)
-            print(f"Mastered stereo voice.mp3 successfully ({os.path.getsize('voice.mp3')} bytes).")
+            print(f"Mastered deep whisper stereo voice.mp3 successfully ({os.path.getsize('voice.mp3')} bytes).")
             return True
         except Exception as e:
-            print(f"Voice mastering filter warning ({e}), converting directly to stereo...")
+            print(f"Whisper EQ warning ({e}), converting directly to warm stereo...")
             subprocess.run([
                 "ffmpeg", "-y", "-i", "voice_raw.mp3",
-                "-af", "volume=2.2", "-ar", "44100", "-ac", "2",
+                "-af", "lowpass=f=5000,volume=1.9", "-ar", "44100", "-ac", "2",
                 "voice.mp3"
             ], check=True)
             return True
@@ -280,7 +293,7 @@ def fetch_asmr_audio(matched_key):
     subprocess.run([
         "ffmpeg", "-y", "-f", "lavfi",
         "-i", f"anoisesrc=d={VIDEO_DURATION}:c=pink:r=44100:a=0.10",
-        "-af", "bandpass=f=900:width_type=h:w=700,tremolo=f=0.4:d=0.35,extrastereo=m=2.0",
+        "-af", "bandpass=f=800:width_type=h:w=600,tremolo=f=0.35:d=0.30,extrastereo=m=2.0",
         "asmr.mp3"
     ], check=True)
 
@@ -292,7 +305,7 @@ def fetch_relaxing_piano():
 
     if FREESOUND_API_KEY:
         try:
-            query = urllib.parse.quote("soft relaxing piano calm ambient instrumental")
+            query = urllib.parse.quote("soft felt piano calm ambient sleep instrumental")
             url = (
                 f"https://freesound.org/apiv2/search/text/"
                 f"?query={query}&filter=duration:[16 TO 240]&fields=id,name,previews"
@@ -326,7 +339,7 @@ def fetch_relaxing_piano():
         "[2:a]tremolo=f=0.20:d=0.6[a2];"
         "[3:a]tremolo=f=0.15:d=0.7[a3];"
         "[a0][a1][a2][a3]amix=inputs=4:duration=first,"
-        "lowpass=f=650,aecho=0.8:0.88:120|240:0.4|0.3,volume=0.18",
+        "lowpass=f=550,aecho=0.8:0.88:120|240:0.4|0.3,volume=0.18",
         "synth_piano.mp3"
     ], check=True)
     return "synth_piano.mp3"
@@ -355,7 +368,7 @@ def render_ffmpeg(piano_file):
     vo_duration = get_duration("voice.mp3")
     vo_start = 2.5
     vo_end = min(VIDEO_DURATION - 1.0, vo_start + vo_duration + 0.4)
-    print(f"Voiceover duration: {vo_duration:.2f}s (Ducking background from {vo_start:.1f}s to {vo_end:.1f}s)")
+    print(f"Whisper Voiceover duration: {vo_duration:.2f}s (Ducking background from {vo_start:.1f}s to {vo_end:.1f}s)")
 
     piano_duration = get_duration(piano_file)
     piano_start = random.uniform(0, piano_duration - VIDEO_DURATION - 1) if piano_duration > 20 else 0
@@ -396,16 +409,19 @@ def render_ffmpeg(piano_file):
         f"fade=t=in:st=0:d=0.5,fade=t=out:st={FADE_START}:d={FADE_DURATION}[v]"
     )
 
-    # All 3 audio streams are explicitly locked to 44100Hz Stereo so amix never drops the voiceover!
+    # 3-Layer Ultra-Relaxing Audio Mix:
+    # - Piano: Warm 1800Hz felt-piano lowpass filter, ducks to 14% during whisper
+    # - ASMR: Soft 4200Hz lowpass + binaural stereo widening, ducks to 20% during whisper
+    # - Voice: Deep intimate whisper enters at 2.5s (2500ms)
     a_filter = (
         f"[1:a]aformat=sample_rates=44100:channel_layouts=stereo,"
-        f"lowpass=f=3200,volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.16,0.34)':eval=frame[piano];"
+        f"lowpass=f=1800,volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.14,0.30)':eval=frame[piano];"
         f"[2:a]aformat=sample_rates=44100:channel_layouts=stereo,"
-        f"volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.20,0.42)':eval=frame[asmr];"
+        f"lowpass=f=4200,extrastereo=m=1.6,volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.20,0.38)':eval=frame[asmr];"
         f"[3:a]aformat=sample_rates=44100:channel_layouts=stereo,"
         f"adelay=2500|2500,apad=whole_dur={VIDEO_DURATION}[voice];"
         f"[piano][asmr][voice]amix=inputs=3:duration=first:dropout_transition=0:normalize=0,"
-        f"afade=t=in:st=0:d=1.0,"
+        f"afade=t=in:st=0:d=1.2,"
         f"afade=t=out:st={FADE_START}:d={FADE_DURATION}[a]"
     )
 
@@ -472,7 +488,7 @@ def main():
     download_visual_background()
     fetch_asmr_audio(matched_key)
     piano_file = fetch_relaxing_piano()
-    generate_deep_calm_voiceover(overlay_text)
+    generate_deep_whisper_voiceover(overlay_text)
     render_ffmpeg(piano_file)
 
     video_url = upload_video_with_fallback()
