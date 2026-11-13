@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import json
 import asyncio
@@ -61,12 +62,12 @@ VIDEO_DURATION = 16.0
 FADE_DURATION = 1.5
 FADE_START = VIDEO_DURATION - FADE_DURATION  # 14.5 seconds
 
-# Microsoft's most realistic, natural human neural voices (Gen-2 Multilingual models)
-NATURAL_CALM_VOICES = [
-    "en-US-AndrewMultilingualNeural",  # #1 Most realistic warm, calm, natural male voice
-    "en-US-BrianMultilingualNeural",   # Soft, intimate, natural conversational male voice
-    "en-US-AvaMultilingualNeural",     # Ultra-natural, warm, soothing female voice
-    "en-GB-RyanNeural"                 # Crisp, calm British narrator
+# Voices specifically chosen for emotional warmth, soft cadence, and Calm/Headspace app feel
+SOOTHING_VOICES = [
+    "en-GB-RyanNeural",                # #1 Calm App style: velvety, unhurried, deeply soothing British male
+    "en-US-SteffanNeural",             # Warm, gentle, compassionate meditation/therapist tone
+    "en-US-BrianMultilingualNeural",   # Soft, intimate, close-mic conversational warmth
+    "en-US-AvaMultilingualNeural"      # Ultra-soft, breathy, comforting female voice
 ]
 
 ASMR_QUERY_MAP = {
@@ -104,65 +105,113 @@ def prepare_quote_lines(text):
 
     return line_files
 
-async def _edge_tts_save(spoken_text, voice_name):
-    # Subtle -10% rate and -2Hz pitch keeps 100% natural human vocal formants without sounding robotic!
-    communicate = edge_tts.Communicate(
-        text=spoken_text,
-        voice=voice_name,
-        rate="-10%",
-        pitch="-2Hz"
-    )
-    await communicate.save("voice_raw.mp3")
+async def _save_phrases_with_pauses(phrases, voice_name):
+    """Generates each sentence separately so the voice naturally drops its tone at the end of every thought."""
+    chunk_files = []
+    for idx, phrase in enumerate(phrases):
+        fname = f"vo_chunk_{idx}.mp3"
+        # Gentle -12% rate and -2Hz pitch preserves 100% human warmth while feeling unhurried
+        communicate = edge_tts.Communicate(
+            text=phrase,
+            voice=voice_name,
+            rate="-12%",
+            pitch="-2Hz"
+        )
+        await communicate.save(fname)
+        if os.path.exists(fname) and os.path.getsize(fname) > 500:
+            chunk_files.append(fname)
+    return chunk_files
 
-def generate_natural_calm_voiceover(text):
-    """Generates a 100% natural, studio-clean human voiceover without artificial pitch warping."""
-    # Clean punctuation so the neural model uses its own natural human prosody and breath pauses
-    spoken_text = " ".join(text.replace("\r", " ").replace("\n", " ").split()).strip()
+def generate_instant_calm_voiceover(text):
+    """
+    Splits the quote into natural thought-chunks, inserts a real 1.1s meditative silence gap
+    between sentences, and masters with a Warm Ribbon-Mic + 12ms Binaural Presence chain.
+    """
+    # Split quote into separate sentences/thoughts so the narrator pauses deeply between lines
+    raw_chunks = re.split(r'(?<=[.!?])\s+|\n+', text.replace("\r", ""))
+    phrases = [c.strip() for c in raw_chunks if c.strip()]
+    if not phrases:
+        phrases = ["Peace comes from within."]
 
-    raw_generated = False
-
-    for voice_name in NATURAL_CALM_VOICES:
+    chunk_files = []
+    for voice_name in SOOTHING_VOICES:
         try:
-            asyncio.run(_edge_tts_save(spoken_text, voice_name))
-            if os.path.exists("voice_raw.mp3") and os.path.getsize("voice_raw.mp3") > 1000:
-                print(f"Generated natural neural voiceover using {voice_name} ({os.path.getsize('voice_raw.mp3')} bytes).")
-                raw_generated = True
+            chunk_files = asyncio.run(_save_phrases_with_pauses(phrases, voice_name))
+            if chunk_files:
+                print(f"Generated {len(chunk_files)} meditative voice chunks using {voice_name}.")
                 break
         except Exception as e:
             print(f"edge_tts ({voice_name}) failed: {e}")
 
+    raw_generated = False
+
+    if chunk_files:
+        try:
+            # Create a 1.1-second pure meditative pause between sentences
+            subprocess.run([
+                "ffmpeg", "-y", "-f", "lavfi",
+                "-i", "anullsrc=r=24000:cl=mono:d=1.10",
+                "-c:a", "libmp3lame", "-b:a", "128k",
+                "pause_gap.mp3"
+            ], check=True)
+
+            with open("vo_concat.txt", "w", encoding="utf-8") as f:
+                for i, cf in enumerate(chunk_files):
+                    f.write(f"file '{cf}'\n")
+                    if i < len(chunk_files) - 1:
+                        f.write("file 'pause_gap.mp3'\n")
+
+            subprocess.run([
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                "-i", "vo_concat.txt", "-c", "copy", "voice_raw.mp3"
+            ], check=True)
+            raw_generated = True
+        except Exception as e:
+            print(f"Concat warning: {e}")
+            if os.path.exists(chunk_files[0]):
+                os.replace(chunk_files[0], "voice_raw.mp3")
+                raw_generated = True
+
     if not raw_generated:
         try:
-            print("Switching to gTTS backup...")
             from gtts import gTTS
-            tts = gTTS(text=spoken_text, lang="en", tld="co.uk", slow=False)
+            tts = gTTS(text=" ... ".join(phrases), lang="en", tld="co.uk", slow=False)
             tts.save("voice_raw.mp3")
-            if os.path.exists("voice_raw.mp3") and os.path.getsize("voice_raw.mp3") > 1000:
-                raw_generated = True
+            raw_generated = True
         except Exception as e:
             print(f"gTTS backup failed: {e}")
 
-    # Pure Studio Mastering: NO asetrate warping, NO hollow midrange scoop, NO metallic echo.
-    # Just clean 44.1kHz stereo conversion, gentle warmth at 120Hz, and smooth dynamic leveling.
+    # Studio "Warm Ribbon Mic + Binaural Intimacy" Mastering Chain:
+    # 1. highpass=f=70: cleans rumble
+    # 2. equalizer=f=135:g=3.5: warm, comforting chest blanket
+    # 3. equalizer=f=3200:g=-2.5: softens harsh "broadcast" midrange edge
+    # 4. equalizer=f=6500:g=-5.0: de-esses sharp "S" sounds so it feels velvety and calm
+    # 5. lowpass=f=7500: warm analog tape roll-off
+    # 6. adelay=0|12: 12ms Binaural Haas effect (makes the voice feel 3D, warm, and right beside you)
     if raw_generated:
         try:
             subprocess.run([
                 "ffmpeg", "-y", "-i", "voice_raw.mp3",
                 "-af", (
                     "aformat=sample_rates=44100:channel_layouts=stereo,"
-                    "highpass=f=75,"
-                    "equalizer=f=125:width_type=o:w=1.5:g=2.0,"
-                    "dynaudnorm=f=150:g=15,"
-                    "volume=1.6"
+                    "highpass=f=70,"
+                    "equalizer=f=135:width_type=o:w=1.6:g=3.5,"
+                    "equalizer=f=3200:width_type=o:w=1.5:g=-2.5,"
+                    "equalizer=f=6500:width_type=o:w=1.5:g=-5.0,"
+                    "lowpass=f=7500,"
+                    "adelay=0|12,"
+                    "afade=t=in:st=0:d=0.15,"
+                    "volume=1.9"
                 ),
                 "-ar", "44100", "-ac", "2",
                 "voice.mp3"
             ], check=True)
             return True
-        except Exception:
+        except Exception as e:
+            print(f"Mastering fallback: {e}")
             subprocess.run([
                 "ffmpeg", "-y", "-i", "voice_raw.mp3",
-                "-af", "volume=1.8", "-ar", "44100", "-ac", "2",
+                "-af", "volume=1.9", "-ar", "44100", "-ac", "2",
                 "voice.mp3"
             ], check=True)
             return True
@@ -333,8 +382,8 @@ def render_ffmpeg(piano_file):
         pts_multiplier = 1.0
 
     vo_duration = get_duration("voice.mp3")
-    vo_start = 2.5
-    vo_end = min(VIDEO_DURATION - 1.0, vo_start + vo_duration + 0.4)
+    vo_start = 2.2
+    vo_end = min(VIDEO_DURATION - 1.0, vo_start + vo_duration + 0.3)
 
     piano_duration = get_duration(piano_file)
     piano_start = random.uniform(0, piano_duration - VIDEO_DURATION - 1) if piano_duration > 20 else 0
@@ -388,99 +437,4 @@ def render_ffmpeg(piano_file):
         f"eq=brightness=-0.04:contrast=1.08:saturation=0.88,"
         f"colorbalance=rs=-0.03:bs=0.04:rh=0.05:gh=0.02:bh=-0.04,"
         f"noise=alls=4:allf=t+u,"
-        f"vignette=PI/4,"
-        f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.48:t=fill,"
-        f"drawbox=x=(iw-140)/2:y={divider_y}:w=140:h=2:color=#e2c08d@0.45:t=fill:enable='between(t,1.5,14.8)',"
-        f"drawbox=x=0:y=ih-6:w='iw*(t/{VIDEO_DURATION})':h=6:color=#e2c08d@0.75:t=fill,"
-        f"{drawtext_filters_str},"
-        f"fade=t=in:st=0:d=0.5,fade=t=out:st={FADE_START}:d={FADE_DURATION}[v]"
-    )
-
-    a_filter = (
-        f"[1:a]aformat=sample_rates=44100:channel_layouts=stereo,"
-        f"lowpass=f=3200,volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.16,0.34)':eval=frame[piano];"
-        f"[2:a]aformat=sample_rates=44100:channel_layouts=stereo,"
-        f"volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.20,0.42)':eval=frame[asmr];"
-        f"[3:a]aformat=sample_rates=44100:channel_layouts=stereo,"
-        f"adelay=2500|2500,apad=whole_dur={VIDEO_DURATION}[voice];"
-        f"[piano][asmr][voice]amix=inputs=3:duration=first:dropout_transition=0:normalize=0,"
-        f"afade=t=in:st=0:d=1.0,"
-        f"afade=t=out:st={FADE_START}:d={FADE_DURATION}[a]"
-    )
-
-    filter_complex = f"{v_filter};{a_filter}"
-
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", "raw_video.mp4",
-        "-ss", f"{piano_start:.2f}", "-stream_loop", "-1", "-i", piano_file,
-        "-stream_loop", "-1", "-i", "asmr.mp3",
-        "-i", "voice.mp3",
-        "-filter_complex", filter_complex,
-        "-map", "[v]", "-map", "[a]",
-        "-t", f"{VIDEO_DURATION}",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "192k",
-        "-movflags", "+faststart",
-        "final_output.mp4"
-    ]
-    subprocess.run(cmd, check=True)
-
-def upload_video_with_fallback():
-    try:
-        upload_result = cloudinary.uploader.upload(
-            "final_output.mp4",
-            resource_type="video",
-            folder="auto_relaxing_videos"
-        )
-        video_url = upload_result["secure_url"]
-        print(f"Uploaded to Cloudinary successfully: {video_url}")
-        return video_url
-    except Exception as e:
-        print(f"Cloudinary upload skipped ({e}). Uploading to backup free MP4 host...")
-
-    try:
-        with open("final_output.mp4", "rb") as f:
-            r = requests.post(
-                "https://litterbox.catbox.moe/resources/internals/api.php",
-                data={"reqtype": "fileupload", "time": "72h"},
-                files={"fileToUpload": ("final_output.mp4", f, "video/mp4")},
-                timeout=60
-            )
-            if r.status_code == 200 and r.text.strip().startswith("http"):
-                return r.text.strip()
-    except Exception as e2:
-        print(f"Litterbox backup failed: {e2}")
-
-    with open("final_output.mp4", "rb") as f:
-        r = requests.post(
-            "https://catbox.moe/user/api.php",
-            data={"reqtype": "fileupload"},
-            files={"fileToUpload": ("final_output.mp4", f, "video/mp4")},
-            timeout=60
-        )
-        return r.text.strip()
-
-def main():
-    matched_key = detect_niche_keyword()
-    download_visual_background()
-    fetch_asmr_audio(matched_key)
-    piano_file = fetch_relaxing_piano()
-    generate_natural_calm_voiceover(overlay_text)
-    render_ffmpeg(piano_file)
-
-    video_url = upload_video_with_fallback()
-
-    if MAKE_WEBHOOK_URL and MAKE_WEBHOOK_URL.startswith("http"):
-        resp = requests.post(MAKE_WEBHOOK_URL, json={
-            "row_id": row_id,
-            "title": title,
-            "video_url": video_url,
-            "caption": caption
-        }, timeout=20)
-        print(f"Sent webhook to Make.com successfully! Status: {resp.status_code}")
-    else:
-        print("Warning: MAKE_WEBHOOK_URL is not set or invalid; skipped Make webhook.")
-
-if __name__ == "__main__":
-    main()
+        f"vign
