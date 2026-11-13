@@ -52,6 +52,13 @@ VIDEO_DURATION = 16.0
 FADE_DURATION = 1.5
 FADE_START = VIDEO_DURATION - FADE_DURATION  # 14.5 seconds
 
+# Deep, calm, grounded male neural voices
+DEEP_CALM_VOICES = [
+    "en-US-ChristopherNeural",         # Deepest, calmest, warm cinematic narrator voice
+    "en-US-AndrewMultilingualNeural",  # Natural, deep, soothing chest-resonance voice
+    "en-US-EricNeural"                 # Soft, grounded late-night storytelling voice
+]
+
 ASMR_QUERY_MAP = {
     "rain": "gentle rain falling window ambient asmr",
     "ocean": "calm ocean waves beach water ambient",
@@ -80,6 +87,59 @@ def prepare_quote_lines(text):
             f.write(line.strip())
         line_files.append(fname)
     return line_files
+
+def generate_deep_calm_voiceover(text):
+    """Generates a deep, slow, relaxing chest-resonance voiceover with warm studio EQ."""
+    # Add natural, slow breathing pauses between phrases
+    spoken_text = (
+        text.replace("\r", " ")
+        .replace("\n", " ... ")
+        .replace(". ", " ... ")
+        .replace(", ", " .. ")
+        .replace("; ", " ... ")
+        .strip()
+    )
+    
+    # Uses ChristopherNeural (deepest calm voice) with AndrewMultilingualNeural as fallback
+    for voice_name in DEEP_CALM_VOICES:
+        try:
+            cmd = [
+                "edge-tts",
+                "--voice", voice_name,
+                "--rate=-18%",
+                "--pitch=-6Hz",
+                "--text", spoken_text,
+                "--write-media", "voice_raw.mp3"
+            ]
+            subprocess.run(cmd, check=True)
+            
+            # Studio Mastering Filter for Deep, Relaxing Voice:
+            # 1. highpass=f=65 (cleans sub-rumble)
+            # 2. equalizer=f=130:width_type=o:w=2:g=4 (boosts warm chest resonance at 130Hz)
+            # 3. lowpass=f=5800 (removes sharp/robotic high-end sibilance)
+            # 4. aecho=0.8:0.85:55:0.16 (subtle intimate room depth)
+            subprocess.run([
+                "ffmpeg", "-y", "-i", "voice_raw.mp3",
+                "-af", (
+                    "highpass=f=65,"
+                    "equalizer=f=130:width_type=o:w=2:g=4,"
+                    "lowpass=f=5800,"
+                    "aecho=0.8:0.85:55:0.16,"
+                    "volume=1.55"
+                ),
+                "voice.mp3"
+            ], check=True)
+            print(f"Generated deep calm voiceover ({voice_name}) successfully.")
+            return True
+        except Exception as e:
+            print(f"Voice {voice_name} retry: {e}")
+
+    print("All TTS attempts failed, generating silent fallback track.")
+    subprocess.run([
+        "ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={VIDEO_DURATION}",
+        "voice.mp3"
+    ], check=True)
+    return False
 
 def detect_niche_keyword():
     combined = f"{niche} {search_keyword}".lower()
@@ -242,20 +302,23 @@ def get_duration(filename):
 def render_ffmpeg(piano_file):
     line_files = prepare_quote_lines(overlay_text)
     
-    # Check raw_video.mp4 duration so short videos slow down smoothly to match 16.0s
+    # Slow down short clips smoothly so they match 16.0s without looping
     raw_vid_duration = get_duration("raw_video.mp4")
     if 0.5 < raw_vid_duration < VIDEO_DURATION:
-        # Stretch factor > 1.0 reduces playback speed so the clip lasts at least 16 seconds
         pts_multiplier = (VIDEO_DURATION + 0.5) / raw_vid_duration
-        print(f"Video is {raw_vid_duration:.2f}s (< 16s). Reducing speed by {1/pts_multiplier:.2f}x (setpts={pts_multiplier:.4f}*PTS) to match 16s.")
+        print(f"Video is {raw_vid_duration:.2f}s (< 16s). Reducing speed (setpts={pts_multiplier:.4f}*PTS) to match 16s.")
     else:
         pts_multiplier = 1.0
-        print(f"Video is {raw_vid_duration:.2f}s (>= 16s). Playing at normal speed and trimming to 16s.")
+
+    # Calculate exact voiceover timing for smooth background ducking (starts at 2.5s)
+    vo_duration = get_duration("voice.mp3")
+    vo_start = 2.5
+    vo_end = min(VIDEO_DURATION - 1.0, vo_start + vo_duration + 0.4)
 
     piano_duration = get_duration(piano_file)
     piano_start = random.uniform(0, piano_duration - VIDEO_DURATION - 1) if piano_duration > 20 else 0
 
-    # Text stays completely hidden for the first 1.0 second, fades in from 1.0s to 2.0s, and fades out at 14.5s
+    # Text stays hidden for the first 1.0 second, then fades in smoothly
     text_alpha = (
         "if(lt(t,1.0),0,"
         "if(lt(t,2.0),(t-1.0)/1.0,"
@@ -281,7 +344,6 @@ def render_ffmpeg(piano_file):
         )
     drawtext_filters_str = ",".join(drawtext_chain)
 
-    # Video Filter: Dynamic speed adjustment (setpts) + 1080x1920 crop + 48% dark matte + centered quote after 1s
     v_filter = (
         f"[0:v]setpts={pts_multiplier:.4f}*PTS,"
         f"scale=1080:1920:force_original_aspect_ratio=increase,"
@@ -293,23 +355,25 @@ def render_ffmpeg(piano_file):
         f"fade=t=in:st=0:d=0.5,fade=t=out:st={FADE_START}:d={FADE_DURATION}[v]"
     )
 
-    # Audio Filter: Soft Felt Piano (38% volume) + Niche ASMR Ambience (50% volume)
+    # 3-Layer Audio Mix with Automatic Voiceover Ducking:
+    # - Piano & ASMR play richly during the intro, duck softly to 20% while the deep voice speaks (2.5s to vo_end), then swell back up
     a_filter = (
-        f"[1:a]lowpass=f=3500,volume=0.38[piano];"
-        f"[2:a]volume=0.50[asmr];"
-        f"[piano][asmr]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,"
+        f"[1:a]lowpass=f=3200,volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.20,0.36)':eval=frame[piano];"
+        f"[2:a]volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.25,0.45)':eval=frame[asmr];"
+        f"[3:a]adelay=2500|2500,apad=whole_dur={VIDEO_DURATION}[voice];"
+        f"[piano][asmr][voice]amix=inputs=3:duration=first:dropout_transition=2:normalize=0,"
         f"afade=t=in:st=0:d=1.0,"
         f"afade=t=out:st={FADE_START}:d={FADE_DURATION}[a]"
     )
 
     filter_complex = f"{v_filter};{a_filter}"
 
-    # Removed -stream_loop -1 on raw_video.mp4 because setpts now stretches short clips to 16.0s smoothly
     cmd = [
         "ffmpeg", "-y",
         "-i", "raw_video.mp4",
         "-ss", f"{piano_start:.2f}", "-stream_loop", "-1", "-i", piano_file,
         "-stream_loop", "-1", "-i", "asmr.mp3",
+        "-i", "voice.mp3",
         "-filter_complex", filter_complex,
         "-map", "[v]", "-map", "[a]",
         "-t", f"{VIDEO_DURATION}",
@@ -365,6 +429,7 @@ def main():
     download_visual_background()
     fetch_asmr_audio(matched_key)
     piano_file = fetch_relaxing_piano()
+    generate_deep_calm_voiceover(overlay_text)
     render_ffmpeg(piano_file)
 
     video_url = upload_video_with_fallback()
