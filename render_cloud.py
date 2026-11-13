@@ -5,10 +5,34 @@ import urllib.parse
 import textwrap
 import requests
 import subprocess
+
+# 1. Auto-sanitize CLOUDINARY_URL BEFORE importing cloudinary!
+# Strips "CLOUDINARY_URL=", quotes, spaces, and < > angle brackets automatically
+raw_cloud_url = os.environ.get("CLOUDINARY_URL", "").strip()
+if raw_cloud_url.startswith("CLOUDINARY_URL="):
+    raw_cloud_url = raw_cloud_url.split("CLOUDINARY_URL=", 1)[1].strip()
+raw_cloud_url = raw_cloud_url.replace("<", "").replace(">", "").strip('"').strip("'").strip()
+if raw_cloud_url:
+    os.environ["CLOUDINARY_URL"] = raw_cloud_url
+
 import cloudinary
 import cloudinary.uploader
 
-# 1. Load payload sent from Google Sheets
+# Explicitly parse and configure Cloudinary credentials if standard format is present
+if raw_cloud_url.startswith("cloudinary://") and "@" in raw_cloud_url:
+    try:
+        creds_part, cloud_name = raw_cloud_url.replace("cloudinary://", "", 1).split("@", 1)
+        api_key, api_secret = creds_part.split(":", 1)
+        cloudinary.config(
+            cloud_name=cloud_name.strip(),
+            api_key=api_key.strip(),
+            api_secret=api_secret.strip(),
+            secure=True
+        )
+    except Exception as e:
+        print(f"Cloudinary URL parse warning: {e}")
+
+# 2. Load payload sent from Google Sheets
 raw_payload = os.environ.get("PAYLOAD_JSON", "{}")
 try:
     payload = json.loads(raw_payload) if raw_payload else {}
@@ -25,14 +49,6 @@ caption = str(payload.get("caption", "Take a deep breath and relax. #relaxing #a
 PIXABAY_API_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()
 FREESOUND_API_KEY = os.environ.get("FREESOUND_API_KEY", "").strip()
 MAKE_WEBHOOK_URL = os.environ.get("MAKE_WEBHOOK_URL", "").strip()
-
-# Auto-sanitize CLOUDINARY_URL in case "CLOUDINARY_URL=" or quotes were included in GitHub Secrets
-raw_cloud_url = os.environ.get("CLOUDINARY_URL", "").strip()
-if raw_cloud_url.startswith("CLOUDINARY_URL="):
-    raw_cloud_url = raw_cloud_url.split("CLOUDINARY_URL=", 1)[1].strip()
-raw_cloud_url = raw_cloud_url.strip('"').strip("'")
-if raw_cloud_url:
-    os.environ["CLOUDINARY_URL"] = raw_cloud_url
 
 VIDEO_DURATION = 16.0
 FADE_DURATION = 1.5
@@ -93,7 +109,7 @@ def download_visual_background():
         except Exception as e:
             print(f"Pixabay skipped: {e}")
 
-    # Try Pollinations AI image + slow zoom
+    # Try Pollinations AI image
     try:
         prompt = urllib.parse.quote(
             f"cinematic dark moody relaxing aesthetic {search_keyword} nature photography, 8k, no text"
@@ -229,7 +245,7 @@ def render_ffmpeg(piano_file):
         "if(lt(t,15.0),(15.0-t)/1.5,0))))"
     )
 
-    # Compatible with ALL FFmpeg versions (removed FFmpeg 7-only text_align option)
+    # Video Filter: 48% darkened matte overlay + radial vignette + centered white quote
     v_filter = (
         f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
         f"crop=1080:1920,setsar=1,fps=30,"
@@ -248,6 +264,7 @@ def render_ffmpeg(piano_file):
         f"fade=t=in:st=0:d=0.5,fade=t=out:st={FADE_START}:d={FADE_DURATION}[v]"
     )
 
+    # Audio Filter: Soft Felt Piano (38% volume) + Niche ASMR Ambience (50% volume)
     a_filter = (
         f"[1:a]lowpass=f=3500,volume=0.38[piano];"
         f"[2:a]volume=0.50[asmr];"
@@ -273,6 +290,48 @@ def render_ffmpeg(piano_file):
     ]
     subprocess.run(cmd, check=True)
 
+def upload_video_with_fallback():
+    """Uploads to Cloudinary first; falls back to free Catbox/Litterbox MP4 hosting if Cloudinary fails."""
+    try:
+        upload_result = cloudinary.uploader.upload(
+            "final_output.mp4",
+            resource_type="video",
+            folder="auto_relaxing_videos"
+        )
+        video_url = upload_result["secure_url"]
+        print(f"Uploaded to Cloudinary successfully: {video_url}")
+        return video_url
+    except Exception as e:
+        print(f"Cloudinary upload skipped ({e}). Uploading to backup free MP4 host...")
+
+    # Backup 1: Litterbox (Catbox 72h direct MP4 CDN)
+    try:
+        with open("final_output.mp4", "rb") as f:
+            r = requests.post(
+                "https://litterbox.catbox.moe/resources/internals/api.php",
+                data={"reqtype": "fileupload", "time": "72h"},
+                files={"fileToUpload": ("final_output.mp4", f, "video/mp4")},
+                timeout=60
+            )
+            if r.status_code == 200 and r.text.strip().startswith("http"):
+                video_url = r.text.strip()
+                print(f"Uploaded to Litterbox backup host successfully: {video_url}")
+                return video_url
+    except Exception as e2:
+        print(f"Litterbox backup failed: {e2}")
+
+    # Backup 2: Catbox permanent direct MP4 CDN
+    with open("final_output.mp4", "rb") as f:
+        r = requests.post(
+            "https://catbox.moe/user/api.php",
+            data={"reqtype": "fileupload"},
+            files={"fileToUpload": ("final_output.mp4", f, "video/mp4")},
+            timeout=60
+        )
+        video_url = r.text.strip()
+        print(f"Uploaded to Catbox permanent host successfully: {video_url}")
+        return video_url
+
 def main():
     matched_key = detect_niche_keyword()
     download_visual_background()
@@ -280,25 +339,16 @@ def main():
     piano_file = fetch_relaxing_piano()
     render_ffmpeg(piano_file)
 
-    if not os.environ.get("CLOUDINARY_URL"):
-        raise ValueError("CLOUDINARY_URL secret is missing or empty in GitHub Secrets!")
-
-    upload_result = cloudinary.uploader.upload(
-        "final_output.mp4",
-        resource_type="video",
-        folder="auto_relaxing_videos"
-    )
-    video_url = upload_result["secure_url"]
-    print(f"Uploaded successfully: {video_url}")
+    video_url = upload_video_with_fallback()
 
     if MAKE_WEBHOOK_URL and MAKE_WEBHOOK_URL.startswith("http"):
-        requests.post(MAKE_WEBHOOK_URL, json={
+        resp = requests.post(MAKE_WEBHOOK_URL, json={
             "row_id": row_id,
             "title": title,
             "video_url": video_url,
             "caption": caption
         }, timeout=20)
-        print("Sent webhook to Make.com successfully!")
+        print(f"Sent webhook to Make.com successfully! Status: {resp.status_code}")
     else:
         print("Warning: MAKE_WEBHOOK_URL is not set or invalid; skipped Make webhook.")
 
