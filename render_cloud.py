@@ -9,12 +9,19 @@ import textwrap
 import requests
 import subprocess
 
-# Auto-install edge-tts and gTTS if missing in workflow YAML
+# Auto-install kokoro-onnx and soundfile if missing in workflow YAML
 try:
-    import edge_tts
+    import soundfile as sf
+    import numpy as np
+    from kokoro_onnx import Kokoro
 except ImportError:
-    subprocess.run([sys.executable, "-m", "pip", "install", "edge-tts", "gTTS"], check=True)
-    import edge_tts
+    subprocess.run([
+        sys.executable, "-m", "pip", "install",
+        "kokoro-onnx", "soundfile", "numpy", "edge-tts", "gTTS"
+    ], check=True)
+    import soundfile as sf
+    import numpy as np
+    from kokoro_onnx import Kokoro
 
 # 1. Auto-sanitize CLOUDINARY_URL BEFORE importing cloudinary!
 raw_cloud_url = os.environ.get("CLOUDINARY_URL", "").strip()
@@ -62,13 +69,13 @@ VIDEO_DURATION = 16.0
 FADE_DURATION = 1.5
 FADE_START = VIDEO_DURATION - FADE_DURATION  # 14.5 seconds
 
-# Voices specifically chosen for emotional warmth, soft cadence, and Calm/Headspace app feel
-SOOTHING_VOICES = [
-    "en-GB-RyanNeural",                # #1 Calm App style: velvety, unhurried, deeply soothing British male
-    "en-US-SteffanNeural",             # Warm, gentle, compassionate meditation/therapist tone
-    "en-US-BrianMultilingualNeural",   # Soft, intimate, close-mic conversational warmth
-    "en-US-AvaMultilingualNeural"      # Ultra-soft, breathy, comforting female voice
-]
+# Kokoro-82M ASMR & Deep Calm Voice Options:
+# - "af_nicole"  -> Famous breathy, soft-spoken ASMR whisper voice (#1 for instant relaxation)
+# - "af_heart"   -> Warm, emotional, comforting female voice
+# - "bm_george"  -> Deep, velvety British narrator (Calm App feel)
+# - "am_michael" -> Deep, warm, grounded American male voice
+# - "am_adam"    -> Calm, gentle male storytelling voice
+KOKORO_VOICE = "af_nicole"
 
 ASMR_QUERY_MAP = {
     "rain": "gentle rain falling window ambient asmr",
@@ -79,6 +86,27 @@ ASMR_QUERY_MAP = {
     "night": "night crickets calm wind ambient",
     "snow": "soft winter wind snow ambient"
 }
+
+def ensure_kokoro_models():
+    """Downloads Kokoro-82M ONNX model and voices pack if not already downloaded by render.yml."""
+    model_path = "kokoro-v1.0.int8.onnx"
+    voices_path = "voices-v1.0.bin"
+
+    if not os.path.exists(model_path) or os.path.getsize(model_path) < 10_000_000:
+        print("Downloading Kokoro-82M int8 model...")
+        url = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.int8.onnx"
+        r = requests.get(url, timeout=120)
+        with open(model_path, "wb") as f:
+            f.write(r.content)
+
+    if not os.path.exists(voices_path) or os.path.getsize(voices_path) < 1_000_000:
+        print("Downloading Kokoro-82M voices pack...")
+        url = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
+        r = requests.get(url, timeout=60)
+        with open(voices_path, "wb") as f:
+            f.write(r.content)
+
+    return model_path, voices_path
 
 def prepare_quote_lines(text):
     """Splits quote into clean single-line files + creates a spaced-out aesthetic header file."""
@@ -105,103 +133,78 @@ def prepare_quote_lines(text):
 
     return line_files
 
-async def _save_phrases_with_pauses(phrases, voice_name):
-    """Generates each sentence separately so the voice naturally drops its tone at the end of every thought."""
-    chunk_files = []
-    for idx, phrase in enumerate(phrases):
-        fname = f"vo_chunk_{idx}.mp3"
-        # Gentle -12% rate and -2Hz pitch preserves 100% human warmth while feeling unhurried
-        communicate = edge_tts.Communicate(
-            text=phrase,
-            voice=voice_name,
-            rate="-12%",
-            pitch="-2Hz"
-        )
-        await communicate.save(fname)
-        if os.path.exists(fname) and os.path.getsize(fname) > 500:
-            chunk_files.append(fname)
-    return chunk_files
-
-def generate_instant_calm_voiceover(text):
+def generate_kokoro_asmr_voiceover(text):
     """
-    Splits the quote into natural thought-chunks, inserts a real 1.1s meditative silence gap
-    between sentences, and masters with a Warm Ribbon-Mic + 12ms Binaural Presence chain.
+    Generates an ultra-realistic, breathy ASMR voiceover using Kokoro-82M (af_nicole),
+    with a 1.1-second meditative silence pause between sentences and binaural mastering.
     """
-    # Split quote into separate sentences/thoughts so the narrator pauses deeply between lines
     raw_chunks = re.split(r'(?<=[.!?])\s+|\n+', text.replace("\r", ""))
     phrases = [c.strip() for c in raw_chunks if c.strip()]
     if not phrases:
         phrases = ["Peace comes from within."]
 
-    chunk_files = []
-    for voice_name in SOOTHING_VOICES:
-        try:
-            chunk_files = asyncio.run(_save_phrases_with_pauses(phrases, voice_name))
-            if chunk_files:
-                print(f"Generated {len(chunk_files)} meditative voice chunks using {voice_name}.")
-                break
-        except Exception as e:
-            print(f"edge_tts ({voice_name}) failed: {e}")
-
     raw_generated = False
 
-    if chunk_files:
-        try:
-            # Create a 1.1-second pure meditative pause between sentences
-            subprocess.run([
-                "ffmpeg", "-y", "-f", "lavfi",
-                "-i", "anullsrc=r=24000:cl=mono:d=1.10",
-                "-c:a", "libmp3lame", "-b:a", "128k",
-                "pause_gap.mp3"
-            ], check=True)
+    try:
+        model_path, voices_path = ensure_kokoro_models()
+        kokoro = Kokoro(model_path, voices_path)
 
-            with open("vo_concat.txt", "w", encoding="utf-8") as f:
-                for i, cf in enumerate(chunk_files):
-                    f.write(f"file '{cf}'\n")
-                    if i < len(chunk_files) - 1:
-                        f.write("file 'pause_gap.mp3'\n")
+        audio_segments = []
+        sample_rate = 24000
 
-            subprocess.run([
-                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                "-i", "vo_concat.txt", "-c", "copy", "voice_raw.mp3"
-            ], check=True)
+        for i, phrase in enumerate(phrases):
+            # speed=0.84 gives a slow, unhurried, deeply soothing ASMR cadence
+            samples, sr = kokoro.create(
+                phrase,
+                voice=KOKORO_VOICE,
+                speed=0.84,
+                lang="en-us"
+            )
+            sample_rate = sr
+            audio_segments.append(samples)
+
+            # Insert a 1.1-second pure meditative silence gap between sentences
+            if i < len(phrases) - 1:
+                pause_samples = np.zeros(int(sample_rate * 1.10), dtype=np.float32)
+                audio_segments.append(pause_samples)
+
+        full_audio = np.concatenate(audio_segments)
+        sf.write("voice_raw.wav", full_audio, sample_rate)
+        if os.path.exists("voice_raw.wav") and os.path.getsize("voice_raw.wav") > 1000:
+            print(f"Generated Kokoro-82M ASMR voiceover ({KOKORO_VOICE}) successfully!")
             raw_generated = True
-        except Exception as e:
-            print(f"Concat warning: {e}")
-            if os.path.exists(chunk_files[0]):
-                os.replace(chunk_files[0], "voice_raw.mp3")
-                raw_generated = True
+    except Exception as e:
+        print(f"Kokoro-82M error ({e}), falling back to Edge-TTS...")
 
+    # Fallback if Kokoro fails for any reason
     if not raw_generated:
         try:
-            from gtts import gTTS
-            tts = gTTS(text=" ... ".join(phrases), lang="en", tld="co.uk", slow=False)
-            tts.save("voice_raw.mp3")
+            import edge_tts
+            communicate = edge_tts.Communicate(
+                text=" ... ".join(phrases),
+                voice="en-GB-RyanNeural",
+                rate="-12%",
+                pitch="-2Hz"
+            )
+            asyncio.run(communicate.save("voice_raw.wav"))
             raw_generated = True
-        except Exception as e:
-            print(f"gTTS backup failed: {e}")
+        except Exception as e2:
+            print(f"Fallback TTS failed: {e2}")
 
-    # Studio "Warm Ribbon Mic + Binaural Intimacy" Mastering Chain:
-    # 1. highpass=f=70: cleans rumble
-    # 2. equalizer=f=135:g=3.5: warm, comforting chest blanket
-    # 3. equalizer=f=3200:g=-2.5: softens harsh "broadcast" midrange edge
-    # 4. equalizer=f=6500:g=-5.0: de-esses sharp "S" sounds so it feels velvety and calm
-    # 5. lowpass=f=7500: warm analog tape roll-off
-    # 6. adelay=0|12: 12ms Binaural Haas effect (makes the voice feel 3D, warm, and right beside you)
+    # Studio "Warm Ribbon Mic + 12ms Binaural Intimacy" Mastering Chain (44.1kHz Stereo)
     if raw_generated:
         try:
             subprocess.run([
-                "ffmpeg", "-y", "-i", "voice_raw.mp3",
+                "ffmpeg", "-y", "-i", "voice_raw.wav",
                 "-af", (
                     "aformat=sample_rates=44100:channel_layouts=stereo,"
-                    "highpass=f=70,"
-                    "equalizer=f=135:width_type=o:w=1.6:g=3.5,"
-                    "equalizer=f=3200:width_type=o:w=1.5:g=-2.5,"
-                    "equalizer=f=6500:width_type=o:w=1.5:g=-5.0,"
-                    "lowpass=f=7500,"
+                    "highpass=f=65,"
+                    "equalizer=f=130:width_type=o:w=1.5:g=3.0,"
+                    "equalizer=f=6200:width_type=o:w=1.5:g=-4.0,"
+                    "lowpass=f=8000,"
                     "adelay=0|12,"
                     "afade=t=in:st=0:d=0.15,"
-                    "volume=1.9"
+                    "volume=2.1"
                 ),
                 "-ar", "44100", "-ac", "2",
                 "voice.mp3"
@@ -210,8 +213,8 @@ def generate_instant_calm_voiceover(text):
         except Exception as e:
             print(f"Mastering fallback: {e}")
             subprocess.run([
-                "ffmpeg", "-y", "-i", "voice_raw.mp3",
-                "-af", "volume=1.9", "-ar", "44100", "-ac", "2",
+                "ffmpeg", "-y", "-i", "voice_raw.wav",
+                "-af", "volume=2.0", "-ar", "44100", "-ac", "2",
                 "voice.mp3"
             ], check=True)
             return True
@@ -437,4 +440,99 @@ def render_ffmpeg(piano_file):
         f"eq=brightness=-0.04:contrast=1.08:saturation=0.88,"
         f"colorbalance=rs=-0.03:bs=0.04:rh=0.05:gh=0.02:bh=-0.04,"
         f"noise=alls=4:allf=t+u,"
-        f"vign
+        f"vignette=PI/4,"
+        f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.48:t=fill,"
+        f"drawbox=x=(iw-140)/2:y={divider_y}:w=140:h=2:color=#e2c08d@0.45:t=fill:enable='between(t,1.5,14.8)',"
+        f"drawbox=x=0:y=ih-6:w='iw*(t/{VIDEO_DURATION})':h=6:color=#e2c08d@0.75:t=fill,"
+        f"{drawtext_filters_str},"
+        f"fade=t=in:st=0:d=0.5,fade=t=out:st={FADE_START}:d={FADE_DURATION}[v]"
+    )
+
+    a_filter = (
+        f"[1:a]aformat=sample_rates=44100:channel_layouts=stereo,"
+        f"lowpass=f=3000,volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.16,0.35)':eval=frame[piano];"
+        f"[2:a]aformat=sample_rates=44100:channel_layouts=stereo,"
+        f"volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.20,0.42)':eval=frame[asmr];"
+        f"[3:a]aformat=sample_rates=44100:channel_layouts=stereo,"
+        f"adelay=2200|2200,apad=whole_dur={VIDEO_DURATION}[voice];"
+        f"[piano][asmr][voice]amix=inputs=3:duration=first:dropout_transition=0:normalize=0,"
+        f"afade=t=in:st=0:d=1.0,"
+        f"afade=t=out:st={FADE_START}:d={FADE_DURATION}[a]"
+    )
+
+    filter_complex = f"{v_filter};{a_filter}"
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", "raw_video.mp4",
+        "-ss", f"{piano_start:.2f}", "-stream_loop", "-1", "-i", piano_file,
+        "-stream_loop", "-1", "-i", "asmr.mp3",
+        "-i", "voice.mp3",
+        "-filter_complex", filter_complex,
+        "-map", "[v]", "-map", "[a]",
+        "-t", f"{VIDEO_DURATION}",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart",
+        "final_output.mp4"
+    ]
+    subprocess.run(cmd, check=True)
+
+def upload_video_with_fallback():
+    try:
+        upload_result = cloudinary.uploader.upload(
+            "final_output.mp4",
+            resource_type="video",
+            folder="auto_relaxing_videos"
+        )
+        video_url = upload_result["secure_url"]
+        print(f"Uploaded to Cloudinary successfully: {video_url}")
+        return video_url
+    except Exception as e:
+        print(f"Cloudinary upload skipped ({e}). Uploading to backup free MP4 host...")
+
+    try:
+        with open("final_output.mp4", "rb") as f:
+            r = requests.post(
+                "https://litterbox.catbox.moe/resources/internals/api.php",
+                data={"reqtype": "fileupload", "time": "72h"},
+                files={"fileToUpload": ("final_output.mp4", f, "video/mp4")},
+                timeout=60
+            )
+            if r.status_code == 200 and r.text.strip().startswith("http"):
+                return r.text.strip()
+    except Exception as e2:
+        print(f"Litterbox backup failed: {e2}")
+
+    with open("final_output.mp4", "rb") as f:
+        r = requests.post(
+            "https://catbox.moe/user/api.php",
+            data={"reqtype": "fileupload"},
+            files={"fileToUpload": ("final_output.mp4", f, "video/mp4")},
+            timeout=60
+        )
+        return r.text.strip()
+
+def main():
+    matched_key = detect_niche_keyword()
+    download_visual_background()
+    fetch_asmr_audio(matched_key)
+    piano_file = fetch_relaxing_piano()
+    generate_kokoro_asmr_voiceover(overlay_text)
+    render_ffmpeg(piano_file)
+
+    video_url = upload_video_with_fallback()
+
+    if MAKE_WEBHOOK_URL and MAKE_WEBHOOK_URL.startswith("http"):
+        resp = requests.post(MAKE_WEBHOOK_URL, json={
+            "row_id": row_id,
+            "title": title,
+            "video_url": video_url,
+            "caption": caption
+        }, timeout=20)
+        print(f"Sent webhook to Make.com successfully! Status: {resp.status_code}")
+    else:
+        print("Warning: MAKE_WEBHOOK_URL is not set or invalid; skipped Make webhook.")
+
+if __name__ == "__main__":
+    main()
