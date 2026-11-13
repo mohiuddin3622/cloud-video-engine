@@ -7,7 +7,6 @@ import requests
 import subprocess
 
 # 1. Auto-sanitize CLOUDINARY_URL BEFORE importing cloudinary!
-# Strips "CLOUDINARY_URL=", quotes, spaces, and < > angle brackets automatically
 raw_cloud_url = os.environ.get("CLOUDINARY_URL", "").strip()
 if raw_cloud_url.startswith("CLOUDINARY_URL="):
     raw_cloud_url = raw_cloud_url.split("CLOUDINARY_URL=", 1)[1].strip()
@@ -18,7 +17,6 @@ if raw_cloud_url:
 import cloudinary
 import cloudinary.uploader
 
-# Explicitly parse and configure Cloudinary credentials if standard format is present
 if raw_cloud_url.startswith("cloudinary://") and "@" in raw_cloud_url:
     try:
         creds_part, cloud_name = raw_cloud_url.replace("cloudinary://", "", 1).split("@", 1)
@@ -64,13 +62,26 @@ ASMR_QUERY_MAP = {
     "snow": "soft winter wind snow ambient"
 }
 
-def prepare_quote_file(text):
+def prepare_quote_lines(text):
+    """Splits text into clean, single-line files with ZERO newline characters (fixes the [] box bug!)."""
+    # Strip any hidden carriage returns or weird control characters
+    cleaned = text.replace("\r", "").replace("\u2028", "\n").replace("\u2029", "\n")
     wrapped_lines = []
-    for paragraph in text.splitlines():
-        wrapped_lines.extend(textwrap.wrap(paragraph, width=22) or [""])
-    clean_text = "\n".join(wrapped_lines)
-    with open("quote.txt", "w", encoding="utf-8") as f:
-        f.write(clean_text)
+    for paragraph in cleaned.split("\n"):
+        paragraph = paragraph.strip()
+        if paragraph:
+            wrapped_lines.extend(textwrap.wrap(paragraph, width=22))
+    if not wrapped_lines:
+        wrapped_lines = ["Peace comes from within."]
+
+    line_files = []
+    for idx, line in enumerate(wrapped_lines):
+        fname = f"quote_line_{idx}.txt"
+        # Write clean single line with NO trailing \n or \r
+        with open(fname, "w", encoding="utf-8", newline="") as f:
+            f.write(line.strip())
+        line_files.append(fname)
+    return line_files
 
 def detect_niche_keyword():
     combined = f"{niche} {search_keyword}".lower()
@@ -109,7 +120,6 @@ def download_visual_background():
         except Exception as e:
             print(f"Pixabay skipped: {e}")
 
-    # Try Pollinations AI image
     try:
         prompt = urllib.parse.quote(
             f"cinematic dark moody relaxing aesthetic {search_keyword} nature photography, 8k, no text"
@@ -132,7 +142,6 @@ def download_visual_background():
     except Exception as e:
         print(f"Pollinations fallback skipped: {e}")
 
-    # Ultimate Bulletproof Fallback: Generate a dark midnight aesthetic canvas via FFmpeg lavfi
     print("Generating built-in dark midnight aesthetic background via FFmpeg...")
     subprocess.run([
         "ffmpeg", "-y", "-f", "lavfi",
@@ -233,7 +242,7 @@ def get_duration(filename):
         return 16.0
 
 def render_ffmpeg(piano_file):
-    prepare_quote_file(overlay_text)
+    line_files = prepare_quote_lines(overlay_text)
     
     piano_duration = get_duration(piano_file)
     piano_start = random.uniform(0, piano_duration - VIDEO_DURATION - 1) if piano_duration > 20 else 0
@@ -245,22 +254,32 @@ def render_ffmpeg(piano_file):
         "if(lt(t,15.0),(15.0-t)/1.5,0))))"
     )
 
-    # Video Filter: 48% darkened matte overlay + radial vignette + centered white quote
+    # Build centered drawtext filter for each line (eliminates [] newline boxes & centers every line!)
+    line_height = 80
+    total_height = len(line_files) * line_height
+    drawtext_chain = []
+    for idx, fname in enumerate(line_files):
+        y_offset = f"(h-{total_height})/2+{idx * line_height}"
+        drawtext_chain.append(
+            f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf:"
+            f"textfile={fname}:"
+            f"fontcolor=white:"
+            f"fontsize=54:"
+            f"x=(w-text_w)/2:"
+            f"y={y_offset}:"
+            f"shadowcolor=black@0.90:shadowx=4:shadowy=5:"
+            f"alpha='{text_alpha}'"
+        )
+    drawtext_filters_str = ",".join(drawtext_chain)
+
+    # Video Filter: 48% darkened matte overlay + radial vignette + individually centered lines
     v_filter = (
         f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
         f"crop=1080:1920,setsar=1,fps=30,"
         f"eq=brightness=-0.05:contrast=1.08:saturation=0.85,"
         f"vignette=PI/4,"
         f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.48:t=fill,"
-        f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf:"
-        f"textfile=quote.txt:"
-        f"fontcolor=white:"
-        f"fontsize=54:"
-        f"line_spacing=24:"
-        f"x=(w-text_w)/2:"
-        f"y=(h-text_h)/2:"
-        f"shadowcolor=black@0.90:shadowx=4:shadowy=5:"
-        f"alpha='{text_alpha}',"
+        f"{drawtext_filters_str},"
         f"fade=t=in:st=0:d=0.5,fade=t=out:st={FADE_START}:d={FADE_DURATION}[v]"
     )
 
@@ -304,7 +323,6 @@ def upload_video_with_fallback():
     except Exception as e:
         print(f"Cloudinary upload skipped ({e}). Uploading to backup free MP4 host...")
 
-    # Backup 1: Litterbox (Catbox 72h direct MP4 CDN)
     try:
         with open("final_output.mp4", "rb") as f:
             r = requests.post(
@@ -320,7 +338,6 @@ def upload_video_with_fallback():
     except Exception as e2:
         print(f"Litterbox backup failed: {e2}")
 
-    # Backup 2: Catbox permanent direct MP4 CDN
     with open("final_output.mp4", "rb") as f:
         r = requests.post(
             "https://catbox.moe/user/api.php",
