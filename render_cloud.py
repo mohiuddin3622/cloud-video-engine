@@ -63,8 +63,7 @@ ASMR_QUERY_MAP = {
 }
 
 def prepare_quote_lines(text):
-    """Splits text into clean, single-line files with ZERO newline characters (fixes the [] box bug!)."""
-    # Strip any hidden carriage returns or weird control characters
+    """Splits text into clean, single-line files with ZERO newline characters."""
     cleaned = text.replace("\r", "").replace("\u2028", "\n").replace("\u2029", "\n")
     wrapped_lines = []
     for paragraph in cleaned.split("\n"):
@@ -77,7 +76,6 @@ def prepare_quote_lines(text):
     line_files = []
     for idx, line in enumerate(wrapped_lines):
         fname = f"quote_line_{idx}.txt"
-        # Write clean single line with NO trailing \n or \r
         with open(fname, "w", encoding="utf-8", newline="") as f:
             f.write(line.strip())
         line_files.append(fname)
@@ -244,17 +242,27 @@ def get_duration(filename):
 def render_ffmpeg(piano_file):
     line_files = prepare_quote_lines(overlay_text)
     
+    # Check raw_video.mp4 duration so short videos slow down smoothly to match 16.0s
+    raw_vid_duration = get_duration("raw_video.mp4")
+    if 0.5 < raw_vid_duration < VIDEO_DURATION:
+        # Stretch factor > 1.0 reduces playback speed so the clip lasts at least 16 seconds
+        pts_multiplier = (VIDEO_DURATION + 0.5) / raw_vid_duration
+        print(f"Video is {raw_vid_duration:.2f}s (< 16s). Reducing speed by {1/pts_multiplier:.2f}x (setpts={pts_multiplier:.4f}*PTS) to match 16s.")
+    else:
+        pts_multiplier = 1.0
+        print(f"Video is {raw_vid_duration:.2f}s (>= 16s). Playing at normal speed and trimming to 16s.")
+
     piano_duration = get_duration(piano_file)
     piano_start = random.uniform(0, piano_duration - VIDEO_DURATION - 1) if piano_duration > 20 else 0
 
+    # Text stays completely hidden for the first 1.0 second, fades in from 1.0s to 2.0s, and fades out at 14.5s
     text_alpha = (
         "if(lt(t,1.0),0,"
-        "if(lt(t,2.2),(t-1.0)/1.2,"
-        "if(lt(t,13.5),1,"
-        "if(lt(t,15.0),(15.0-t)/1.5,0))))"
+        "if(lt(t,2.0),(t-1.0)/1.0,"
+        "if(lt(t,14.5),1,"
+        "if(lt(t,15.8),(15.8-t)/1.3,0))))"
     )
 
-    # Build centered drawtext filter for each line (eliminates [] newline boxes & centers every line!)
     line_height = 80
     total_height = len(line_files) * line_height
     drawtext_chain = []
@@ -268,13 +276,15 @@ def render_ffmpeg(piano_file):
             f"x=(w-text_w)/2:"
             f"y={y_offset}:"
             f"shadowcolor=black@0.90:shadowx=4:shadowy=5:"
+            f"enable='gte(t,1.0)':"
             f"alpha='{text_alpha}'"
         )
     drawtext_filters_str = ",".join(drawtext_chain)
 
-    # Video Filter: 48% darkened matte overlay + radial vignette + individually centered lines
+    # Video Filter: Dynamic speed adjustment (setpts) + 1080x1920 crop + 48% dark matte + centered quote after 1s
     v_filter = (
-        f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+        f"[0:v]setpts={pts_multiplier:.4f}*PTS,"
+        f"scale=1080:1920:force_original_aspect_ratio=increase,"
         f"crop=1080:1920,setsar=1,fps=30,"
         f"eq=brightness=-0.05:contrast=1.08:saturation=0.85,"
         f"vignette=PI/4,"
@@ -294,9 +304,10 @@ def render_ffmpeg(piano_file):
 
     filter_complex = f"{v_filter};{a_filter}"
 
+    # Removed -stream_loop -1 on raw_video.mp4 because setpts now stretches short clips to 16.0s smoothly
     cmd = [
         "ffmpeg", "-y",
-        "-stream_loop", "-1", "-i", "raw_video.mp4",
+        "-i", "raw_video.mp4",
         "-ss", f"{piano_start:.2f}", "-stream_loop", "-1", "-i", piano_file,
         "-stream_loop", "-1", "-i", "asmr.mp3",
         "-filter_complex", filter_complex,
