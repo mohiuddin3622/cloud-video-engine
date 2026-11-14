@@ -80,10 +80,10 @@ ASMR_QUERY_MAP = {
 }
 
 def ensure_assets():
-    """Downloads Kokoro-82M ONNX models and Luxury Cormorant Garamond Font if not already present."""
+    """Downloads Kokoro-82M ONNX models and Classic Poetic Book Serif Font (Crimson Text / EB Garamond)."""
     model_path = "kokoro-v1.0.int8.onnx"
     voices_path = "voices-v1.0.bin"
-    font_path = "CormorantGaramond.ttf"
+    font_path = "PoetrySerif.ttf"
 
     if not os.path.exists(model_path) or os.path.getsize(model_path) < 10_000_000:
         print("Downloading Kokoro-82M int8 model...")
@@ -99,22 +99,29 @@ def ensure_assets():
         with open(voices_path, "wb") as f:
             f.write(r.content)
 
-    if not os.path.exists(font_path) or os.path.getsize(font_path) < 50_000:
-        try:
-            print("Downloading Cormorant Garamond luxury font...")
-            font_url = "https://raw.githubusercontent.com/google/fonts/main/ofl/cormorantgaramond/CormorantGaramond%5Bwght%5D.ttf"
-            r = requests.get(font_url, timeout=30)
-            if r.status_code == 200 and len(r.content) > 50_000:
-                with open(font_path, "wb") as f:
-                    f.write(r.content)
-        except Exception as e:
-            print(f"Custom font download skipped ({e}), using system Garamond/Serif fallback.")
+    if not os.path.exists(font_path) or os.path.getsize(font_path) < 40_000:
+        font_urls = [
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/crimsontext/CrimsonText-Regular.ttf",
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/lora/Lora%5Bwght%5D.ttf",
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/cormorantgaramond/CormorantGaramond%5Bwght%5D.ttf"
+        ]
+        for f_url in font_urls:
+            try:
+                r = requests.get(f_url, timeout=25)
+                if r.status_code == 200 and len(r.content) > 40_000:
+                    with open(font_path, "wb") as f:
+                        f.write(r.content)
+                    print(f"Downloaded poetic serif font successfully from {f_url}")
+                    break
+            except Exception as e:
+                print(f"Font attempt skipped: {e}")
 
     return model_path, voices_path
 
 def get_quote_font_path():
-    """Returns CormorantGaramond.ttf or EBGaramond if available, otherwise DejaVuSerif."""
+    """Returns PoetrySerif.ttf or EBGaramond if available, otherwise DejaVuSerif."""
     candidates = [
+        "PoetrySerif.ttf",
         "CormorantGaramond.ttf",
         "/usr/share/fonts/truetype/ebgaramond/EBGaramond12-Regular.ttf",
         "/usr/share/fonts/opentype/ebgaramond/EBGaramond12-Regular.otf",
@@ -125,30 +132,47 @@ def get_quote_font_path():
             return path
     return "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
 
-def prepare_quote_lines(text):
-    """Splits quote into clean single-line files + creates a spaced-out aesthetic header file."""
-    cleaned = text.replace("\r", "").replace("\u2028", "\n").replace("\u2029", "\n")
-    wrapped_lines = []
-    for paragraph in cleaned.split("\n"):
-        paragraph = paragraph.strip()
-        if paragraph:
-            wrapped_lines.extend(textwrap.wrap(paragraph, width=24))
-    if not wrapped_lines:
-        wrapped_lines = ["Peace comes from within."]
+def prepare_poetic_lines(text):
+    """
+    Formats overlay_text into left-aligned poetic lines & stanzas matching the Sleeping Poet style.
+    Returns a list of (filename, relative_y_offset) tuples and total_block_height.
+    """
+    cleaned = text.replace("\r", "").replace("\u2028", "\n").replace("\u2029", "\n").strip()
+    if not cleaned:
+        cleaned = "Peace comes from within.\nDo not seek it without."
 
-    line_files = []
-    for idx, line in enumerate(wrapped_lines):
-        fname = f"quote_line_{idx}.txt"
-        with open(fname, "w", encoding="utf-8", newline="") as f:
-            f.write(line.strip())
-        line_files.append(fname)
+    # Check if user already formatted multi-stanza text; if it's a single line with multiple sentences, split sentences into stanzas
+    raw_lines = cleaned.split("\n")
+    if len(raw_lines) == 1 and ". " in cleaned:
+        stanzas = [s.strip() for s in re.split(r'(?<=[.!?])\s+', cleaned) if s.strip()]
+    else:
+        # Split on empty lines (\n\n) to detect stanzas
+        stanzas = [s.strip() for s in re.split(r'\n\s*\n', cleaned) if s.strip()]
 
-    clean_title = "".join(c for c in title.upper() if c.isalnum() or c == " ").strip() or "DAILY STILLNESS"
-    spaced_header = "   ".join(word for word in [" ".join(list(w)) for w in clean_title.split()])
-    with open("header.txt", "w", encoding="utf-8", newline="") as f:
-        f.write(f"•  {spaced_header}  •")
+    line_height = 60       # Crisp poetic line spacing for fontsize 45
+    stanza_gap = 40        # Extra vertical space between stanzas (like the screenshot)
+    current_y = 0
+    line_items = []
+    file_idx = 0
 
-    return line_files
+    for s_idx, stanza in enumerate(stanzas):
+        for subline in stanza.split("\n"):
+            subline = subline.strip()
+            if not subline:
+                continue
+            wrapped = textwrap.wrap(subline, width=28)
+            for w_line in wrapped:
+                fname = f"quote_line_{file_idx}.txt"
+                with open(fname, "w", encoding="utf-8", newline="") as f:
+                    f.write(w_line.strip())
+                line_items.append((fname, current_y))
+                current_y += line_height
+                file_idx += 1
+        if s_idx < len(stanzas) - 1:
+            current_y += stanza_gap
+
+    total_height = max(line_height, current_y - line_height)
+    return line_items, total_height
 
 def get_duration(filename):
     try:
@@ -409,7 +433,7 @@ def fetch_relaxing_piano(target_duration):
     return "synth_piano.mp3"
 
 def render_ffmpeg(piano_file, vo_duration, total_duration):
-    line_files = prepare_quote_lines(overlay_text)
+    line_items, total_height = prepare_poetic_lines(overlay_text)
     quote_font = get_quote_font_path()
 
     fade_start = total_duration - FADE_DURATION
@@ -424,56 +448,34 @@ def render_ffmpeg(piano_file, vo_duration, total_duration):
     else:
         pts_multiplier = 1.0
 
-    # Voiceover starts at 2.0s and finishes completely with 4.0s of extra instrumental tail
     vo_start = VO_START_DELAY
     vo_end = vo_start + vo_duration + 0.3
 
     piano_duration = get_duration(piano_file)
     piano_start = random.uniform(0, piano_duration - total_duration - 1) if piano_duration > (total_duration + 4) else 0
 
-    line_height = 86
-    total_height = len(line_files) * line_height
-    header_y = f"(h-{total_height})/2-95"
-    divider_y = f"(h+{total_height})/2+45"
+    drawtext_chain = []
 
-    # Header appears at 0.5s and stays until the final 1.5s fade-out
-    header_alpha = (
-        f"if(lt(t,0.5),0,"
-        f"if(lt(t,1.5),(t-0.5)/1.0,"
-        f"if(lt(t,{text_fade_start:.2f}),0.80,"
-        f"if(lt(t,{text_fade_end:.2f}),0.80*({text_fade_end:.2f}-t)/1.3,0))))"
-    )
-    drawtext_chain = [
-        f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
-        f"textfile=header.txt:"
-        f"fontcolor=#e2c08d:"
-        f"fontsize=26:"
-        f"x=(w-text_w)/2:"
-        f"y={header_y}:"
-        f"shadowcolor=black@0.85:shadowx=2:shadowy=2:"
-        f"enable='gte(t,0.5)':"
-        f"alpha='{header_alpha}'"
-    ]
-
-    # Quote lines start appearing at 0.5s (0.5s, 0.95s, 1.40s...) and stay until text_fade_start
-    for idx, fname in enumerate(line_files):
-        start_t = 0.5 + (idx * 0.45)
-        fade_in_end = start_t + 0.95
+    # Left-aligned poetic lines (x=76, fontsize=45) starting at 0.5s with stanza spacing
+    for idx, (fname, rel_y) in enumerate(line_items):
+        start_t = 0.5 + (idx * 0.35)
+        fade_in_end = start_t + 0.85
         line_alpha = (
             f"if(lt(t,{start_t:.2f}),0,"
-            f"if(lt(t,{fade_in_end:.2f}),(t-{start_t:.2f})/0.95,"
+            f"if(lt(t,{fade_in_end:.2f}),(t-{start_t:.2f})/0.85,"
             f"if(lt(t,{text_fade_start:.2f}),1,"
             f"if(lt(t,{text_fade_end:.2f}),({text_fade_end:.2f}-t)/1.3,0))))"
         )
-        y_offset = f"(h-{total_height})/2+{idx * line_height}"
+        # Vertically positioned slightly above the bottom Reels caption area, just like the screenshot
+        y_offset = f"(h-{total_height})/2-70+{rel_y}"
         drawtext_chain.append(
             f"drawtext=fontfile={quote_font}:"
             f"textfile={fname}:"
-            f"fontcolor=#fdfbf7:"
-            f"fontsize=64:"
-            f"x=(w-text_w)/2:"
+            f"fontcolor=#f5f5f3:"
+            f"fontsize=45:"
+            f"x=76:"
             f"y={y_offset}:"
-            f"shadowcolor=black@0.92:shadowx=4:shadowy=5:"
+            f"shadowcolor=black@0.85:shadowx=2:shadowy=3:"
             f"enable='gte(t,{start_t:.2f})':"
             f"alpha='{line_alpha}'"
         )
@@ -484,18 +486,15 @@ def render_ffmpeg(piano_file, vo_duration, total_duration):
         f"[0:v]setpts={pts_multiplier:.4f}*PTS,"
         f"scale=1080:1920:force_original_aspect_ratio=increase,"
         f"crop=1080:1920,setsar=1,fps=30,"
-        f"eq=brightness=-0.04:contrast=1.08:saturation=0.88,"
-        f"colorbalance=rs=-0.03:bs=0.04:rh=0.05:gh=0.02:bh=-0.04,"
+        f"eq=brightness=-0.05:contrast=1.08:saturation=0.82,"
+        f"colorbalance=rs=-0.02:bs=0.03:rh=0.03:gh=0.01:bh=-0.02,"
         f"noise=alls=4:allf=t+u,"
         f"vignette=PI/4,"
-        f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.48:t=fill,"
-        f"drawbox=x=(iw-140)/2:y={divider_y}:w=140:h=2:color=#e2c08d@0.45:t=fill:enable='between(t,1.0,{text_fade_end:.2f})',"
-        f"drawbox=x=0:y=ih-6:w='iw*(t/{total_duration:.2f})':h=6:color=#e2c08d@0.75:t=fill,"
+        f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.46:t=fill,"
         f"{drawtext_filters_str},"
         f"fade=t=in:st=0:d=0.5,fade=t=out:st={fade_start:.2f}:d={FADE_DURATION}[v]"
     )
 
-    # Background ducks while voice speaks, then swells back up for the 4-second outro before fading out
     a_filter = (
         f"[1:a]aformat=sample_rates=44100:channel_layouts=stereo,"
         f"lowpass=f=3000,volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.16,0.35)':eval=frame[piano];"
@@ -577,7 +576,7 @@ def main():
     fetch_asmr_audio(matched_key, total_duration)
     piano_file = fetch_relaxing_piano(total_duration)
 
-    # Step 4: Render final video with dynamic duration
+    # Step 4: Render final video with left-aligned poetic layout and dynamic duration
     render_ffmpeg(piano_file, vo_duration, total_duration)
 
     video_url = upload_video_with_fallback()
