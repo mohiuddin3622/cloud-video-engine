@@ -69,14 +69,6 @@ VIDEO_DURATION = 16.0
 FADE_DURATION = 1.5
 FADE_START = VIDEO_DURATION - FADE_DURATION  # 14.5 seconds
 
-# Kokoro-82M ASMR & Deep Calm Voice Options:
-# - "af_nicole"  -> Famous breathy, soft-spoken ASMR whisper voice (#1 for instant relaxation)
-# - "af_heart"   -> Warm, emotional, comforting female voice
-# - "bm_george"  -> Deep, velvety British narrator (Calm App feel)
-# - "am_michael" -> Deep, warm, grounded American male voice
-# - "am_adam"    -> Calm, gentle male storytelling voice
-KOKORO_VOICE = "af_nicole"
-
 ASMR_QUERY_MAP = {
     "rain": "gentle rain falling window ambient asmr",
     "ocean": "calm ocean waves beach water ambient",
@@ -87,10 +79,11 @@ ASMR_QUERY_MAP = {
     "snow": "soft winter wind snow ambient"
 }
 
-def ensure_kokoro_models():
-    """Downloads Kokoro-82M ONNX model and voices pack if not already downloaded by render.yml."""
+def ensure_assets():
+    """Downloads Kokoro-82M ONNX models and Luxury Cormorant Garamond Font if not already present."""
     model_path = "kokoro-v1.0.int8.onnx"
     voices_path = "voices-v1.0.bin"
+    font_path = "CormorantGaramond.ttf"
 
     if not os.path.exists(model_path) or os.path.getsize(model_path) < 10_000_000:
         print("Downloading Kokoro-82M int8 model...")
@@ -106,7 +99,24 @@ def ensure_kokoro_models():
         with open(voices_path, "wb") as f:
             f.write(r.content)
 
+    if not os.path.exists(font_path) or os.path.getsize(font_path) < 50_000:
+        try:
+            print("Downloading Cormorant Garamond SemiBold luxury font...")
+            font_url = "https://github.com/google/fonts/raw/main/ofl/cormorantgaramond/CormorantGaramond-SemiBold.ttf"
+            r = requests.get(font_url, timeout=30)
+            if r.status_code == 200 and len(r.content) > 50_000:
+                with open(font_path, "wb") as f:
+                    f.write(r.content)
+        except Exception as e:
+            print(f"Custom font download skipped ({e}), using system serif fallback.")
+
     return model_path, voices_path
+
+def get_quote_font_path():
+    """Returns CormorantGaramond.ttf if downloaded, otherwise falls back to Ubuntu DejaVuSerif."""
+    if os.path.exists("CormorantGaramond.ttf") and os.path.getsize("CormorantGaramond.ttf") > 50_000:
+        return "CormorantGaramond.ttf"
+    return "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
 
 def prepare_quote_lines(text):
     """Splits quote into clean single-line files + creates a spaced-out aesthetic header file."""
@@ -115,7 +125,7 @@ def prepare_quote_lines(text):
     for paragraph in cleaned.split("\n"):
         paragraph = paragraph.strip()
         if paragraph:
-            wrapped_lines.extend(textwrap.wrap(paragraph, width=21))
+            wrapped_lines.extend(textwrap.wrap(paragraph, width=24))
     if not wrapped_lines:
         wrapped_lines = ["Peace comes from within."]
 
@@ -135,8 +145,8 @@ def prepare_quote_lines(text):
 
 def generate_kokoro_asmr_voiceover(text):
     """
-    Generates an ultra-realistic, breathy ASMR voiceover using Kokoro-82M (af_nicole),
-    with a 1.1-second meditative silence pause between sentences and binaural mastering.
+    Generates an ultra-realistic voiceover by blending 55% af_nicole (breathy ASMR whisper)
+    + 45% af_heart (warm emotional depth), with a 1.1s meditative silence gap between sentences.
     """
     raw_chunks = re.split(r'(?<=[.!?])\s+|\n+', text.replace("\r", ""))
     phrases = [c.strip() for c in raw_chunks if c.strip()]
@@ -146,24 +156,32 @@ def generate_kokoro_asmr_voiceover(text):
     raw_generated = False
 
     try:
-        model_path, voices_path = ensure_kokoro_models()
+        model_path, voices_path = ensure_assets()
         kokoro = Kokoro(model_path, voices_path)
+
+        # Custom 55/45 Voice Blend: Breathy ASMR Whisper (af_nicole) + Warm Emotional Depth (af_heart)
+        try:
+            nicole_style = kokoro.get_voice_style("af_nicole")
+            heart_style = kokoro.get_voice_style("af_heart")
+            voice_target = (nicole_style * 0.55) + (heart_style * 0.45)
+            print("Using custom 55% af_nicole + 45% af_heart blended ASMR voice vector.")
+        except Exception:
+            voice_target = "af_nicole"
 
         audio_segments = []
         sample_rate = 24000
 
         for i, phrase in enumerate(phrases):
-            # speed=0.84 gives a slow, unhurried, deeply soothing ASMR cadence
             samples, sr = kokoro.create(
                 phrase,
-                voice=KOKORO_VOICE,
-                speed=0.84,
+                voice=voice_target,
+                speed=0.83,
                 lang="en-us"
             )
             sample_rate = sr
             audio_segments.append(samples)
 
-            # Insert a 1.1-second pure meditative silence gap between sentences
+            # 1.1-second pure meditative breathing pause between sentences
             if i < len(phrases) - 1:
                 pause_samples = np.zeros(int(sample_rate * 1.10), dtype=np.float32)
                 audio_segments.append(pause_samples)
@@ -171,12 +189,11 @@ def generate_kokoro_asmr_voiceover(text):
         full_audio = np.concatenate(audio_segments)
         sf.write("voice_raw.wav", full_audio, sample_rate)
         if os.path.exists("voice_raw.wav") and os.path.getsize("voice_raw.wav") > 1000:
-            print(f"Generated Kokoro-82M ASMR voiceover ({KOKORO_VOICE}) successfully!")
+            print("Generated blended Kokoro-82M ASMR voiceover successfully!")
             raw_generated = True
     except Exception as e:
         print(f"Kokoro-82M error ({e}), falling back to Edge-TTS...")
 
-    # Fallback if Kokoro fails for any reason
     if not raw_generated:
         try:
             import edge_tts
@@ -233,32 +250,53 @@ def detect_niche_keyword():
     return "rain"
 
 def download_visual_background():
-    """1. Tries Pixabay Video -> 2. Tries Pollinations AI -> 3. Pure FFmpeg Dark Aesthetic Fallback."""
+    """
+    1. Tries Vertical (9:16) HD Pixabay Video ->
+    2. Tries Any-Orientation HD Pixabay Video ->
+    3. Tries Pollinations AI ->
+    4. Pure FFmpeg Dark Aesthetic Fallback.
+    """
     if PIXABAY_API_KEY:
         try:
             q = urllib.parse.quote(search_keyword)
-            url = f"https://pixabay.com/api/videos/?key={PIXABAY_API_KEY}&q={q}&per_page=10&safesearch=true"
-            r = requests.get(url, timeout=20)
-            if r.status_code == 200:
-                hits = r.json().get("hits", [])
-                if not hits:
-                    url = f"https://pixabay.com/api/videos/?key={PIXABAY_API_KEY}&q=calm+nature+rain&per_page=10"
-                    hits = requests.get(url, timeout=20).json().get("hits", [])
-                if hits:
-                    chosen = random.choice(hits)
-                    videos_dict = chosen.get("videos", {})
-                    video_url = (
-                        videos_dict.get("large", {}).get("url")
-                        or videos_dict.get("medium", {}).get("url")
-                        or videos_dict.get("small", {}).get("url")
-                    )
-                    if video_url:
-                        vid_data = requests.get(video_url, timeout=60).content
-                        if len(vid_data) > 50000:
-                            with open("raw_video.mp4", "wb") as f:
-                                f.write(vid_data)
-                            print("Downloaded video from Pixabay successfully.")
-                            return
+            # Priority 1: Native Vertical (9:16) HD videos for cleaner mobile framing
+            vertical_url = (
+                f"https://pixabay.com/api/videos/?key={PIXABAY_API_KEY}"
+                f"&q={q}&orientation=vertical&per_page=15&safesearch=true"
+            )
+            r = requests.get(vertical_url, timeout=20)
+            hits = r.json().get("hits", []) if r.status_code == 200 else []
+
+            # Priority 2: All orientations for the search keyword
+            if not hits:
+                any_url = f"https://pixabay.com/api/videos/?key={PIXABAY_API_KEY}&q={q}&per_page=15&safesearch=true"
+                r2 = requests.get(any_url, timeout=20)
+                hits = r2.json().get("hits", []) if r2.status_code == 200 else []
+
+            # Priority 3: Fallback calm nature vertical search
+            if not hits:
+                fallback_url = (
+                    f"https://pixabay.com/api/videos/?key={PIXABAY_API_KEY}"
+                    f"&q=calm+nature+rain&orientation=vertical&per_page=15&safesearch=true"
+                )
+                r3 = requests.get(fallback_url, timeout=20)
+                hits = r3.json().get("hits", []) if r3.status_code == 200 else []
+
+            if hits:
+                chosen = random.choice(hits)
+                videos_dict = chosen.get("videos", {})
+                video_url = (
+                    videos_dict.get("large", {}).get("url")
+                    or videos_dict.get("medium", {}).get("url")
+                    or videos_dict.get("small", {}).get("url")
+                )
+                if video_url:
+                    vid_data = requests.get(video_url, timeout=60).content
+                    if len(vid_data) > 50000:
+                        with open("raw_video.mp4", "wb") as f:
+                            f.write(vid_data)
+                        print("Downloaded HD video from Pixabay successfully.")
+                        return
         except Exception as e:
             print(f"Pixabay skipped: {e}")
 
@@ -377,6 +415,7 @@ def get_duration(filename):
 
 def render_ffmpeg(piano_file):
     line_files = prepare_quote_lines(overlay_text)
+    quote_font = get_quote_font_path()
     
     raw_vid_duration = get_duration("raw_video.mp4")
     if 0.5 < raw_vid_duration < VIDEO_DURATION:
@@ -391,7 +430,7 @@ def render_ffmpeg(piano_file):
     piano_duration = get_duration(piano_file)
     piano_start = random.uniform(0, piano_duration - VIDEO_DURATION - 1) if piano_duration > 20 else 0
 
-    line_height = 84
+    line_height = 86
     total_height = len(line_files) * line_height
     header_y = f"(h-{total_height})/2-95"
     divider_y = f"(h+{total_height})/2+45"
@@ -420,10 +459,10 @@ def render_ffmpeg(piano_file):
         )
         y_offset = f"(h-{total_height})/2+{idx * line_height}"
         drawtext_chain.append(
-            f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf:"
+            f"drawtext=fontfile={quote_font}:"
             f"textfile={fname}:"
             f"fontcolor=#fdfbf7:"
-            f"fontsize=54:"
+            f"fontsize=64:"
             f"x=(w-text_w)/2:"
             f"y={y_offset}:"
             f"shadowcolor=black@0.92:shadowx=4:shadowy=5:"
