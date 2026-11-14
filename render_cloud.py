@@ -419,7 +419,7 @@ def render_ffmpeg(piano_file):
         pts_multiplier = 1.0
 
     vo_duration = get_duration("voice.mp3")
-    vo_start = 2.2
+    vo_start = 2.0
     vo_end = min(VIDEO_DURATION - 1.0, vo_start + vo_duration + 0.3)
 
     piano_duration = get_duration(piano_file)
@@ -430,7 +430,8 @@ def render_ffmpeg(piano_file):
     header_y = f"(h-{total_height})/2-95"
     divider_y = f"(h+{total_height})/2+45"
 
-    header_alpha = "if(lt(t,1.0),0,if(lt(t,2.0),(t-1.0)/1.0,if(lt(t,14.5),0.80,if(lt(t,15.8),0.80*(15.8-t)/1.3,0))))"
+    # Header appears at 0.5s and fades in smoothly by 1.5s
+    header_alpha = "if(lt(t,0.5),0,if(lt(t,1.5),(t-0.5)/1.0,if(lt(t,14.5),0.80,if(lt(t,15.8),0.80*(15.8-t)/1.3,0))))"
     drawtext_chain = [
         f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
         f"textfile=header.txt:"
@@ -439,12 +440,13 @@ def render_ffmpeg(piano_file):
         f"x=(w-text_w)/2:"
         f"y={header_y}:"
         f"shadowcolor=black@0.85:shadowx=2:shadowy=2:"
-        f"enable='gte(t,1.0)':"
+        f"enable='gte(t,0.5)':"
         f"alpha='{header_alpha}'"
     ]
 
+    # Quote lines start appearing at 0.5s (0.5s, 0.95s, 1.40s...)
     for idx, fname in enumerate(line_files):
-        start_t = 1.0 + (idx * 0.45)
+        start_t = 0.5 + (idx * 0.45)
         fade_in_end = start_t + 0.95
         line_alpha = (
             f"if(lt(t,{start_t:.2f}),0,"
@@ -476,7 +478,7 @@ def render_ffmpeg(piano_file):
         f"noise=alls=4:allf=t+u,"
         f"vignette=PI/4,"
         f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.48:t=fill,"
-        f"drawbox=x=(iw-140)/2:y={divider_y}:w=140:h=2:color=#e2c08d@0.45:t=fill:enable='between(t,1.5,14.8)',"
+        f"drawbox=x=(iw-140)/2:y={divider_y}:w=140:h=2:color=#e2c08d@0.45:t=fill:enable='between(t,1.0,14.8)',"
         f"drawbox=x=0:y=ih-6:w='iw*(t/{VIDEO_DURATION})':h=6:color=#e2c08d@0.75:t=fill,"
         f"{drawtext_filters_str},"
         f"fade=t=in:st=0:d=0.5,fade=t=out:st={FADE_START}:d={FADE_DURATION}[v]"
@@ -488,7 +490,7 @@ def render_ffmpeg(piano_file):
         f"[2:a]aformat=sample_rates=44100:channel_layouts=stereo,"
         f"volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.20,0.42)':eval=frame[asmr];"
         f"[3:a]aformat=sample_rates=44100:channel_layouts=stereo,"
-        f"adelay=2200|2200,apad=whole_dur={VIDEO_DURATION}[voice];"
+        f"adelay=2000|2000,apad=whole_dur={VIDEO_DURATION}[voice];"
         f"[piano][asmr][voice]amix=inputs=3:duration=first:dropout_transition=0:normalize=0,"
         f"afade=t=in:st=0:d=1.0,"
         f"afade=t=out:st={FADE_START}:d={FADE_DURATION}[a]"
