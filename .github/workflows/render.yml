@@ -13,11 +13,11 @@ jobs:
 
       - name: Install FFmpeg, Fonts, Kokoro-82M ONNX, and Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core espeak-ng libsndfile1 wget
+          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core fonts-ebgaramond espeak-ng libsndfile1 wget curl
           pip install requests cloudinary kokoro-onnx soundfile numpy edge-tts gTTS
           wget -q https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.int8.onnx -O kokoro-v1.0.int8.onnx
           wget -q https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin -O voices-v1.0.bin
-          wget -q "https://github.com/google/fonts/raw/main/ofl/cormorantgaramond/CormorantGaramond-SemiBold.ttf" -O CormorantGaramond.ttf
+          curl -sL "https://raw.githubusercontent.com/google/fonts/main/ofl/cormorantgaramond/CormorantGaramond%5Bwght%5D.ttf" -o CormorantGaramond.ttf || true
 
       - name: Run Video Render & Upload
         env:
