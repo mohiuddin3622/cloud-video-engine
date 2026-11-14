@@ -65,9 +65,9 @@ PIXABAY_API_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()
 FREESOUND_API_KEY = os.environ.get("FREESOUND_API_KEY", "").strip()
 MAKE_WEBHOOK_URL = os.environ.get("MAKE_WEBHOOK_URL", "").strip()
 
-VIDEO_DURATION = 16.0
-FADE_DURATION = 1.5
-FADE_START = VIDEO_DURATION - FADE_DURATION  # 14.5 seconds
+VO_START_DELAY = 2.0      # Voiceover starts at 2.0 seconds
+EXTRA_TAIL_SECONDS = 4.0  # Extra 4.0 seconds of calm ASMR + Piano after voiceover finishes
+FADE_DURATION = 1.5       # Smooth 1.5s fade-out at the very end
 
 ASMR_QUERY_MAP = {
     "rain": "gentle rain falling window ambient asmr",
@@ -149,6 +149,16 @@ def prepare_quote_lines(text):
         f.write(f"•  {spaced_header}  •")
 
     return line_files
+
+def get_duration(filename):
+    try:
+        cmd = [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", filename
+        ]
+        return float(subprocess.check_output(cmd).decode().strip())
+    except Exception:
+        return 10.0
 
 def generate_kokoro_asmr_voiceover(text):
     """
@@ -241,7 +251,7 @@ def generate_kokoro_asmr_voiceover(text):
             return True
 
     subprocess.run([
-        "ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={VIDEO_DURATION}",
+        "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo:d=10.0",
         "voice.mp3"
     ], check=True)
     return False
@@ -253,7 +263,7 @@ def detect_niche_keyword():
             return key
     return "rain"
 
-def download_visual_background():
+def download_visual_background(target_duration):
     if PIXABAY_API_KEY:
         try:
             q = urllib.parse.quote(search_keyword)
@@ -308,7 +318,7 @@ def download_visual_background():
             subprocess.run([
                 "ffmpeg", "-y", "-loop", "1", "-i", "bg_scene.jpg",
                 "-vf", "scale=1080:1920,fps=30",
-                "-t", f"{VIDEO_DURATION}",
+                "-t", f"{target_duration:.2f}",
                 "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
                 "raw_video.mp4"
             ], check=True)
@@ -318,19 +328,19 @@ def download_visual_background():
 
     subprocess.run([
         "ffmpeg", "-y", "-f", "lavfi",
-        "-i", f"color=c=#0d1b2a:s=1080x1920:r=30:d={VIDEO_DURATION}",
+        "-i", f"color=c=#0d1b2a:s=1080x1920:r=30:d={target_duration:.2f}",
         "-vf", "noise=alls=8:allf=t+u",
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
         "raw_video.mp4"
     ], check=True)
 
-def fetch_asmr_audio(matched_key):
+def fetch_asmr_audio(matched_key, target_duration):
     if FREESOUND_API_KEY:
         try:
             query = urllib.parse.quote(ASMR_QUERY_MAP.get(matched_key, f"{search_keyword} ambient"))
             url = (
                 f"https://freesound.org/apiv2/search/text/"
-                f"?query={query}&filter=duration:[16 TO 180]&fields=id,name,previews"
+                f"?query={query}&filter=duration:[15 TO 180]&fields=id,name,previews"
                 f"&page_size=8&token={FREESOUND_API_KEY}"
             )
             r = requests.get(url, timeout=15)
@@ -349,12 +359,12 @@ def fetch_asmr_audio(matched_key):
 
     subprocess.run([
         "ffmpeg", "-y", "-f", "lavfi",
-        "-i", f"anoisesrc=d={VIDEO_DURATION}:c=pink:r=44100:a=0.10",
+        "-i", f"anoisesrc=d={target_duration:.2f}:c=pink:r=44100:a=0.10",
         "-af", "bandpass=f=900:width_type=h:w=700,tremolo=f=0.4:d=0.35,extrastereo=m=2.0",
         "asmr.mp3"
     ], check=True)
 
-def fetch_relaxing_piano():
+def fetch_relaxing_piano(target_duration):
     for filename in ["piano.mp3", "bgm.mp3", "audio/piano.mp3", "audio/default.mp3"]:
         if os.path.exists(filename):
             return filename
@@ -364,7 +374,7 @@ def fetch_relaxing_piano():
             query = urllib.parse.quote("soft relaxing piano calm ambient instrumental")
             url = (
                 f"https://freesound.org/apiv2/search/text/"
-                f"?query={query}&filter=duration:[16 TO 240]&fields=id,name,previews"
+                f"?query={query}&filter=duration:[20 TO 240]&fields=id,name,previews"
                 f"&page_size=10&token={FREESOUND_API_KEY}"
             )
             r = requests.get(url, timeout=15)
@@ -383,10 +393,10 @@ def fetch_relaxing_piano():
 
     subprocess.run([
         "ffmpeg", "-y",
-        "-f", "lavfi", "-i", f"sine=frequency=261.63:duration={VIDEO_DURATION}",
-        "-f", "lavfi", "-i", f"sine=frequency=329.63:duration={VIDEO_DURATION}",
-        "-f", "lavfi", "-i", f"sine=frequency=392.00:duration={VIDEO_DURATION}",
-        "-f", "lavfi", "-i", f"sine=frequency=493.88:duration={VIDEO_DURATION}",
+        "-f", "lavfi", "-i", f"sine=frequency=261.63:duration={target_duration:.2f}",
+        "-f", "lavfi", "-i", f"sine=frequency=329.63:duration={target_duration:.2f}",
+        "-f", "lavfi", "-i", f"sine=frequency=392.00:duration={target_duration:.2f}",
+        "-f", "lavfi", "-i", f"sine=frequency=493.88:duration={target_duration:.2f}",
         "-filter_complex",
         "[0:a]tremolo=f=0.25:d=0.6[a0];"
         "[1:a]tremolo=f=0.33:d=0.6[a1];"
@@ -398,40 +408,41 @@ def fetch_relaxing_piano():
     ], check=True)
     return "synth_piano.mp3"
 
-def get_duration(filename):
-    try:
-        cmd = [
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", filename
-        ]
-        return float(subprocess.check_output(cmd).decode().strip())
-    except Exception:
-        return 16.0
-
-def render_ffmpeg(piano_file):
+def render_ffmpeg(piano_file, vo_duration, total_duration):
     line_files = prepare_quote_lines(overlay_text)
     quote_font = get_quote_font_path()
-    
+
+    fade_start = total_duration - FADE_DURATION
+    text_fade_start = total_duration - FADE_DURATION
+    text_fade_end = total_duration - 0.2
+
+    # Slow down short clips smoothly so they cover the full dynamic total_duration
     raw_vid_duration = get_duration("raw_video.mp4")
-    if 0.5 < raw_vid_duration < VIDEO_DURATION:
-        pts_multiplier = (VIDEO_DURATION + 0.5) / raw_vid_duration
+    if 0.5 < raw_vid_duration < total_duration:
+        pts_multiplier = (total_duration + 0.5) / raw_vid_duration
+        print(f"Video is {raw_vid_duration:.2f}s (< {total_duration:.2f}s). Stretching speed (setpts={pts_multiplier:.4f}*PTS).")
     else:
         pts_multiplier = 1.0
 
-    vo_duration = get_duration("voice.mp3")
-    vo_start = 2.0
-    vo_end = min(VIDEO_DURATION - 1.0, vo_start + vo_duration + 0.3)
+    # Voiceover starts at 2.0s and finishes completely with 4.0s of extra instrumental tail
+    vo_start = VO_START_DELAY
+    vo_end = vo_start + vo_duration + 0.3
 
     piano_duration = get_duration(piano_file)
-    piano_start = random.uniform(0, piano_duration - VIDEO_DURATION - 1) if piano_duration > 20 else 0
+    piano_start = random.uniform(0, piano_duration - total_duration - 1) if piano_duration > (total_duration + 4) else 0
 
     line_height = 86
     total_height = len(line_files) * line_height
     header_y = f"(h-{total_height})/2-95"
     divider_y = f"(h+{total_height})/2+45"
 
-    # Header appears at 0.5s and fades in smoothly by 1.5s
-    header_alpha = "if(lt(t,0.5),0,if(lt(t,1.5),(t-0.5)/1.0,if(lt(t,14.5),0.80,if(lt(t,15.8),0.80*(15.8-t)/1.3,0))))"
+    # Header appears at 0.5s and stays until the final 1.5s fade-out
+    header_alpha = (
+        f"if(lt(t,0.5),0,"
+        f"if(lt(t,1.5),(t-0.5)/1.0,"
+        f"if(lt(t,{text_fade_start:.2f}),0.80,"
+        f"if(lt(t,{text_fade_end:.2f}),0.80*({text_fade_end:.2f}-t)/1.3,0))))"
+    )
     drawtext_chain = [
         f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
         f"textfile=header.txt:"
@@ -444,15 +455,15 @@ def render_ffmpeg(piano_file):
         f"alpha='{header_alpha}'"
     ]
 
-    # Quote lines start appearing at 0.5s (0.5s, 0.95s, 1.40s...)
+    # Quote lines start appearing at 0.5s (0.5s, 0.95s, 1.40s...) and stay until text_fade_start
     for idx, fname in enumerate(line_files):
         start_t = 0.5 + (idx * 0.45)
         fade_in_end = start_t + 0.95
         line_alpha = (
             f"if(lt(t,{start_t:.2f}),0,"
             f"if(lt(t,{fade_in_end:.2f}),(t-{start_t:.2f})/0.95,"
-            f"if(lt(t,14.5),1,"
-            f"if(lt(t,15.8),(15.8-t)/1.3,0))))"
+            f"if(lt(t,{text_fade_start:.2f}),1,"
+            f"if(lt(t,{text_fade_end:.2f}),({text_fade_end:.2f}-t)/1.3,0))))"
         )
         y_offset = f"(h-{total_height})/2+{idx * line_height}"
         drawtext_chain.append(
@@ -478,22 +489,23 @@ def render_ffmpeg(piano_file):
         f"noise=alls=4:allf=t+u,"
         f"vignette=PI/4,"
         f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.48:t=fill,"
-        f"drawbox=x=(iw-140)/2:y={divider_y}:w=140:h=2:color=#e2c08d@0.45:t=fill:enable='between(t,1.0,14.8)',"
-        f"drawbox=x=0:y=ih-6:w='iw*(t/{VIDEO_DURATION})':h=6:color=#e2c08d@0.75:t=fill,"
+        f"drawbox=x=(iw-140)/2:y={divider_y}:w=140:h=2:color=#e2c08d@0.45:t=fill:enable='between(t,1.0,{text_fade_end:.2f})',"
+        f"drawbox=x=0:y=ih-6:w='iw*(t/{total_duration:.2f})':h=6:color=#e2c08d@0.75:t=fill,"
         f"{drawtext_filters_str},"
-        f"fade=t=in:st=0:d=0.5,fade=t=out:st={FADE_START}:d={FADE_DURATION}[v]"
+        f"fade=t=in:st=0:d=0.5,fade=t=out:st={fade_start:.2f}:d={FADE_DURATION}[v]"
     )
 
+    # Background ducks while voice speaks, then swells back up for the 4-second outro before fading out
     a_filter = (
         f"[1:a]aformat=sample_rates=44100:channel_layouts=stereo,"
         f"lowpass=f=3000,volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.16,0.35)':eval=frame[piano];"
         f"[2:a]aformat=sample_rates=44100:channel_layouts=stereo,"
         f"volume='if(between(t,{vo_start:.2f},{vo_end:.2f}),0.20,0.42)':eval=frame[asmr];"
         f"[3:a]aformat=sample_rates=44100:channel_layouts=stereo,"
-        f"adelay=2000|2000,apad=whole_dur={VIDEO_DURATION}[voice];"
+        f"adelay=2000|2000,apad=whole_dur={total_duration:.2f}[voice];"
         f"[piano][asmr][voice]amix=inputs=3:duration=first:dropout_transition=0:normalize=0,"
         f"afade=t=in:st=0:d=1.0,"
-        f"afade=t=out:st={FADE_START}:d={FADE_DURATION}[a]"
+        f"afade=t=out:st={fade_start:.2f}:d={FADE_DURATION}[a]"
     )
 
     filter_complex = f"{v_filter};{a_filter}"
@@ -506,7 +518,7 @@ def render_ffmpeg(piano_file):
         "-i", "voice.mp3",
         "-filter_complex", filter_complex,
         "-map", "[v]", "-map", "[a]",
-        "-t", f"{VIDEO_DURATION}",
+        "-t", f"{total_duration:.2f}",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart",
@@ -551,11 +563,22 @@ def upload_video_with_fallback():
 
 def main():
     matched_key = detect_niche_keyword()
-    download_visual_background()
-    fetch_asmr_audio(matched_key)
-    piano_file = fetch_relaxing_piano()
+
+    # Step 1: Generate Voiceover FIRST so we know its exact length
     generate_kokoro_asmr_voiceover(overlay_text)
-    render_ffmpeg(piano_file)
+    vo_duration = get_duration("voice.mp3")
+
+    # Step 2: Calculate Dynamic Total Video Duration = 2.0s intro + full voiceover + 4.0s extra tail
+    total_duration = max(12.0, round(VO_START_DELAY + vo_duration + EXTRA_TAIL_SECONDS, 2))
+    print(f"Voiceover length: {vo_duration:.2f}s -> Dynamic Total Video Duration set to: {total_duration:.2f}s (includes +4.0s tail)")
+
+    # Step 3: Download/generate visual & audio tracks matched to total_duration
+    download_visual_background(total_duration)
+    fetch_asmr_audio(matched_key, total_duration)
+    piano_file = fetch_relaxing_piano(total_duration)
+
+    # Step 4: Render final video with dynamic duration
+    render_ffmpeg(piano_file, vo_duration, total_duration)
 
     video_url = upload_video_with_fallback()
 
