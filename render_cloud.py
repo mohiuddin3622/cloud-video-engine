@@ -101,21 +101,28 @@ def ensure_assets():
 
     if not os.path.exists(font_path) or os.path.getsize(font_path) < 50_000:
         try:
-            print("Downloading Cormorant Garamond SemiBold luxury font...")
-            font_url = "https://github.com/google/fonts/raw/main/ofl/cormorantgaramond/CormorantGaramond-SemiBold.ttf"
+            print("Downloading Cormorant Garamond luxury font...")
+            font_url = "https://raw.githubusercontent.com/google/fonts/main/ofl/cormorantgaramond/CormorantGaramond%5Bwght%5D.ttf"
             r = requests.get(font_url, timeout=30)
             if r.status_code == 200 and len(r.content) > 50_000:
                 with open(font_path, "wb") as f:
                     f.write(r.content)
         except Exception as e:
-            print(f"Custom font download skipped ({e}), using system serif fallback.")
+            print(f"Custom font download skipped ({e}), using system Garamond/Serif fallback.")
 
     return model_path, voices_path
 
 def get_quote_font_path():
-    """Returns CormorantGaramond.ttf if downloaded, otherwise falls back to Ubuntu DejaVuSerif."""
-    if os.path.exists("CormorantGaramond.ttf") and os.path.getsize("CormorantGaramond.ttf") > 50_000:
-        return "CormorantGaramond.ttf"
+    """Returns CormorantGaramond.ttf or EBGaramond if available, otherwise DejaVuSerif."""
+    candidates = [
+        "CormorantGaramond.ttf",
+        "/usr/share/fonts/truetype/ebgaramond/EBGaramond12-Regular.ttf",
+        "/usr/share/fonts/opentype/ebgaramond/EBGaramond12-Regular.otf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
+    ]
+    for path in candidates:
+        if os.path.exists(path) and os.path.getsize(path) > 20_000:
+            return path
     return "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
 
 def prepare_quote_lines(text):
@@ -159,7 +166,6 @@ def generate_kokoro_asmr_voiceover(text):
         model_path, voices_path = ensure_assets()
         kokoro = Kokoro(model_path, voices_path)
 
-        # Custom 55/45 Voice Blend: Breathy ASMR Whisper (af_nicole) + Warm Emotional Depth (af_heart)
         try:
             nicole_style = kokoro.get_voice_style("af_nicole")
             heart_style = kokoro.get_voice_style("af_heart")
@@ -181,7 +187,6 @@ def generate_kokoro_asmr_voiceover(text):
             sample_rate = sr
             audio_segments.append(samples)
 
-            # 1.1-second pure meditative breathing pause between sentences
             if i < len(phrases) - 1:
                 pause_samples = np.zeros(int(sample_rate * 1.10), dtype=np.float32)
                 audio_segments.append(pause_samples)
@@ -208,7 +213,6 @@ def generate_kokoro_asmr_voiceover(text):
         except Exception as e2:
             print(f"Fallback TTS failed: {e2}")
 
-    # Studio "Warm Ribbon Mic + 12ms Binaural Intimacy" Mastering Chain (44.1kHz Stereo)
     if raw_generated:
         try:
             subprocess.run([
@@ -250,16 +254,9 @@ def detect_niche_keyword():
     return "rain"
 
 def download_visual_background():
-    """
-    1. Tries Vertical (9:16) HD Pixabay Video ->
-    2. Tries Any-Orientation HD Pixabay Video ->
-    3. Tries Pollinations AI ->
-    4. Pure FFmpeg Dark Aesthetic Fallback.
-    """
     if PIXABAY_API_KEY:
         try:
             q = urllib.parse.quote(search_keyword)
-            # Priority 1: Native Vertical (9:16) HD videos for cleaner mobile framing
             vertical_url = (
                 f"https://pixabay.com/api/videos/?key={PIXABAY_API_KEY}"
                 f"&q={q}&orientation=vertical&per_page=15&safesearch=true"
@@ -267,13 +264,11 @@ def download_visual_background():
             r = requests.get(vertical_url, timeout=20)
             hits = r.json().get("hits", []) if r.status_code == 200 else []
 
-            # Priority 2: All orientations for the search keyword
             if not hits:
                 any_url = f"https://pixabay.com/api/videos/?key={PIXABAY_API_KEY}&q={q}&per_page=15&safesearch=true"
                 r2 = requests.get(any_url, timeout=20)
                 hits = r2.json().get("hits", []) if r2.status_code == 200 else []
 
-            # Priority 3: Fallback calm nature vertical search
             if not hits:
                 fallback_url = (
                     f"https://pixabay.com/api/videos/?key={PIXABAY_API_KEY}"
