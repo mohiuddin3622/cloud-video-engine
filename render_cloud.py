@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import glob
 import json
 import asyncio
 import random
@@ -134,23 +135,21 @@ def get_quote_font_path():
 
 def prepare_poetic_lines(text):
     """
-    Formats overlay_text into left-aligned poetic lines & stanzas matching the Sleeping Poet style.
+    Formats overlay_text into left-aligned poetic lines & stanzas.
     Returns a list of (filename, relative_y_offset) tuples and total_block_height.
     """
     cleaned = text.replace("\r", "").replace("\u2028", "\n").replace("\u2029", "\n").strip()
     if not cleaned:
         cleaned = "Peace comes from within.\nDo not seek it without."
 
-    # Check if user already formatted multi-stanza text; if it's a single line with multiple sentences, split sentences into stanzas
     raw_lines = cleaned.split("\n")
     if len(raw_lines) == 1 and ". " in cleaned:
         stanzas = [s.strip() for s in re.split(r'(?<=[.!?])\s+', cleaned) if s.strip()]
     else:
-        # Split on empty lines (\n\n) to detect stanzas
         stanzas = [s.strip() for s in re.split(r'\n\s*\n', cleaned) if s.strip()]
 
-    line_height = 60       # Crisp poetic line spacing for fontsize 45
-    stanza_gap = 40        # Extra vertical space between stanzas (like the screenshot)
+    line_height = 60
+    stanza_gap = 40
     current_y = 0
     line_items = []
     file_idx = 0
@@ -389,9 +388,21 @@ def fetch_asmr_audio(matched_key, target_duration):
     ], check=True)
 
 def fetch_relaxing_piano(target_duration):
+    """Automatically detects your uploaded custom piano.mp3 (or any custom MP3) before falling back to Freesound."""
     for filename in ["piano.mp3", "bgm.mp3", "audio/piano.mp3", "audio/default.mp3"]:
-        if os.path.exists(filename):
+        if os.path.exists(filename) and os.path.getsize(filename) > 10000:
+            print(f"Using custom uploaded track: {filename}")
             return filename
+
+    excluded = {"asmr.mp3", "voice.mp3", "voice_raw.mp3", "cloud_piano.mp3", "synth_piano.mp3", "pause_gap.mp3"}
+    custom_tracks = [
+        f for f in (glob.glob("*.mp3") + glob.glob("music/*.mp3") + glob.glob("audio/*.mp3"))
+        if os.path.basename(f) not in excluded and os.path.getsize(f) > 10000
+    ]
+    if custom_tracks:
+        chosen_custom = random.choice(custom_tracks)
+        print(f"Using custom uploaded music track: {chosen_custom}")
+        return chosen_custom
 
     if FREESOUND_API_KEY:
         try:
@@ -440,7 +451,6 @@ def render_ffmpeg(piano_file, vo_duration, total_duration):
     text_fade_start = total_duration - FADE_DURATION
     text_fade_end = total_duration - 0.2
 
-    # Slow down short clips smoothly so they cover the full dynamic total_duration
     raw_vid_duration = get_duration("raw_video.mp4")
     if 0.5 < raw_vid_duration < total_duration:
         pts_multiplier = (total_duration + 0.5) / raw_vid_duration
@@ -456,7 +466,6 @@ def render_ffmpeg(piano_file, vo_duration, total_duration):
 
     drawtext_chain = []
 
-    # Left-aligned poetic lines (x=76, fontsize=45) starting at 0.5s with stanza spacing
     for idx, (fname, rel_y) in enumerate(line_items):
         start_t = 0.5 + (idx * 0.35)
         fade_in_end = start_t + 0.85
@@ -466,7 +475,6 @@ def render_ffmpeg(piano_file, vo_duration, total_duration):
             f"if(lt(t,{text_fade_start:.2f}),1,"
             f"if(lt(t,{text_fade_end:.2f}),({text_fade_end:.2f}-t)/1.3,0))))"
         )
-        # Vertically positioned slightly above the bottom Reels caption area, just like the screenshot
         y_offset = f"(h-{total_height})/2-70+{rel_y}"
         drawtext_chain.append(
             f"drawtext=fontfile={quote_font}:"
@@ -482,8 +490,9 @@ def render_ffmpeg(piano_file, vo_duration, total_duration):
 
     drawtext_filters_str = ",".join(drawtext_chain)
 
+    # Starts immediately at Frame 0 with zero black fade-in
     v_filter = (
-        f"[0:v]setpts={pts_multiplier:.4f}*PTS,"
+        f"[0:v]setpts={pts_multiplier:.4f}*(PTS-STARTPTS),"
         f"scale=1080:1920:force_original_aspect_ratio=increase,"
         f"crop=1080:1920,setsar=1,fps=30,"
         f"eq=brightness=-0.05:contrast=1.08:saturation=0.82,"
@@ -492,7 +501,7 @@ def render_ffmpeg(piano_file, vo_duration, total_duration):
         f"vignette=PI/4,"
         f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.46:t=fill,"
         f"{drawtext_filters_str},"
-        f"fade=t=in:st=0:d=0.5,fade=t=out:st={fade_start:.2f}:d={FADE_DURATION}[v]"
+        f"fade=t=out:st={fade_start:.2f}:d={FADE_DURATION}[v]"
     )
 
     a_filter = (
